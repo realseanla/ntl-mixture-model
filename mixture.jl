@@ -120,7 +120,7 @@ function gibbs_sample!(instances::Matrix{Int64}, iteration::Int64, data::Matrix{
     data = Matrix(transpose(deepcopy(data)))
     instances[:, iteration] = instances[:, iteration-1]
     for observation = 1:size(instances)[1]
-        sample_assignment!(observation, data, instances, iteration, num_clusters, cluster_means)
+        gibbs_move!(observation, data, instances, iteration, num_clusters, cluster_means)
     end
 end
 
@@ -327,8 +327,8 @@ function get_clusters(assignment::Vector{Int64})
     return sort(unique(assignment[assigned]))
 end
 
-function sample_assignment!(observation::Int64, data::Matrix{Float64}, instances::Matrix{Int64}, iteration::Int64, 
-                            cluster_num_observations::Vector{Int64}, cluster_means::Matrix{Float64})
+function gibbs_move!(observation::Int64, data::Matrix{Float64}, instances::Matrix{Int64}, iteration::Int64, 
+                     cluster_num_observations::Vector{Int64}, cluster_means::Matrix{Float64})
     remove_observation!(observation, instances, iteration, data, cluster_num_observations, cluster_means)
     assignment = instances[:, iteration]
     clusters = get_clusters(assignment)
