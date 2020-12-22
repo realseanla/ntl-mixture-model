@@ -100,27 +100,34 @@ end
 ## Mixture Fitter
 
 function fit_mixture(data::Matrix, iterations::Int64)
-    n = size(data)[1]
-    dim = size(data)[2]
+    n = size(data)[2]
+    dim = size(data)[1]
     instances = Array{Int64}(undef, n, iterations)
     instances[:, 1] .= 1
     cluster_num_observations = zeros(Int64, n)
     cluster_num_observations[1] = n
     cluster_means = zeros(Float64, dim, n)
-    cluster_means[:, 1] = Statistics.mean(data, dims=1)
+    cluster_means[:, 1] = Statistics.mean(data, dims=2)
+    posterior_means = zeros(Float64, dim, n)
+    posterior_covs = Matrix{Float64}(undef, dim*dim, n)
+    for i = 1:n
+        posterior_covs[:, i] = vec(Matrix{Float64}(I, dim, dim))
+    end
+    compute_gaussian_posterior_parameters!(1, cluster_means, cluster_num_observations, posterior_means, posterior_covs)
     for i = 2:iterations
-        gibbs_sample!(instances, i, data, cluster_num_observations, cluster_means)
+        gibbs_sample!(instances, i, data, cluster_num_observations, cluster_means, posterior_means, posterior_covs)
     end
     instances = DataFrame(instances)
     return instances
 end
 
 function gibbs_sample!(instances::Matrix{Int64}, iteration::Int64, data::Matrix{Float64}, num_clusters::Vector{Int64},
-                       cluster_means::Matrix{Float64})
-    data = Matrix(transpose(deepcopy(data)))
+                       cluster_means::Matrix{Float64}, posterior_means::Matrix{Float64}, 
+                       posterior_covs::Matrix{Float64})
     instances[:, iteration] = instances[:, iteration-1]
     for observation = 1:size(instances)[1]
-        gibbs_move!(observation, data, instances, iteration, num_clusters, cluster_means)
+        gibbs_move!(observation, data, instances, iteration, num_clusters, cluster_means, posterior_means, 
+                    posterior_covs)
     end
 end
 
@@ -129,7 +136,8 @@ function gumbel_max(objects::Vector{Int64}, weights::Vector{Float64})
     return objects[argmax(gumbel_values + weights)]
 end
 
-function update_gaussian_sufficient_statistics!(cluster, cluster_means, datum, cluster_num_observations, update_type)
+function update_gaussian_sufficient_statistics!(cluster::Int64, cluster_means::Matrix{Float64}, datum::Vector{Float64}, 
+                                                cluster_num_observations::Vector{Int64}, update_type::String)
     cluster_mean = vec(cluster_means[:, cluster])
     n = cluster_num_observations[cluster]
     if update_type == "add"
@@ -145,13 +153,18 @@ function update_gaussian_sufficient_statistics!(cluster, cluster_means, datum, c
 end
 
 function remove_observation!(observation::Int64, instances::Matrix{Int64}, iteration::Int64, data::Matrix{Float64},
-                             cluster_num_observations::Vector{Int64}, cluster_means::Matrix{Float64})
+                             cluster_num_observations::Vector{Int64}, cluster_means::Matrix{Float64},
+                             posterior_means::Matrix{Float64}, posterior_covs::Matrix{Float64})
     cluster = instances[observation, iteration]
     instances[observation, iteration] = size(instances)[1] + 1 
     datum = vec(data[:, observation])
     cluster_num_observations[cluster] -= 1
     update_gaussian_sufficient_statistics!(cluster, cluster_means, datum, cluster_num_observations, "remove")
-
+    data_mean = vec(cluster_means[:, cluster])
+    num_obs = cluster_num_observations[cluster]
+    compute_gaussian_posterior_parameters!(cluster, cluster_means, cluster_num_observations, posterior_means, 
+                                           posterior_covs)
+    dim = length(datum)
     if (cluster === observation) && (cluster_num_observations[cluster] > 0)
         assigned_to_cluster = instances[:, iteration] .=== cluster
         new_cluster_time = findfirst(assigned_to_cluster)
@@ -160,13 +173,19 @@ function remove_observation!(observation::Int64, instances::Matrix{Int64}, itera
         cluster_num_observations[cluster] = 0
         cluster_means[:, new_cluster_time] = cluster_means[:, cluster]
         cluster_means[:, cluster] .= 0
+        posterior_means[:, new_cluster_time] = posterior_means[:, cluster]
+        posterior_covs[:, new_cluster_time] = posterior_covs[:, cluster]
+        posterior_means[:, cluster] .= 0
+        posterior_covs[:, cluster] = vec(Matrix{Float64}(I, dim, dim))
     end
 end
 
 function add_observation!(observation::Int64, cluster::Int64, instances::Matrix{Int64}, iteration::Int64, 
                           data::Matrix{Float64}, cluster_num_observations::Vector{Int64}, 
-                          cluster_means::Matrix{Float64})
+                          cluster_means::Matrix{Float64}, posterior_means::Matrix{Float64}, 
+                          posterior_covs::Matrix{Float64})
     if observation < cluster
+        dim = size(data)[1]
         assigned_to_cluster = (instances[:, iteration] .=== cluster)
         old_cluster_time = cluster
         cluster = observation
@@ -175,11 +194,17 @@ function add_observation!(observation::Int64, cluster::Int64, instances::Matrix{
         cluster_num_observations[old_cluster_time] = 0
         cluster_means[:, cluster] = cluster_means[:, old_cluster_time]
         cluster_means[:, old_cluster_time] .= 0
+        posterior_means[:, cluster] = posterior_means[:, old_cluster_time] 
+        posterior_covs[:, cluster] = posterior_covs[:, old_cluster_time] 
+        posterior_means[:, old_cluster_time] .= 0
+        posterior_covs[:, old_cluster_time] = vec(Matrix{Float64}(I, dim, dim))
     end
     instances[observation, iteration] = cluster
     datum = vec(data[:, observation])
     cluster_num_observations[cluster] += 1
     update_gaussian_sufficient_statistics!(cluster, cluster_means, datum, cluster_num_observations, "add")
+    compute_gaussian_posterior_parameters!(cluster, cluster_means, cluster_num_observations, posterior_means, 
+                                           posterior_covs)
 end
 
 function geometric_new_log_weight(n::Int64, num_clusters::Int64)
@@ -259,6 +284,7 @@ function compute_ntl_predictive(observation::Int64, cluster::Int64, cluster_num_
             old_b = younger_cluster_old_psi[2]
             younger_clusters_log_weight += logbeta(new_a, new_b) - logbeta(old_a, old_b)
         end
+
         if observation > youngest_cluster
             cluster_new_psi = deepcopy(cluster_old_psi)
             cluster_new_psi[1] += 1
@@ -270,6 +296,7 @@ function compute_ntl_predictive(observation::Int64, cluster::Int64, cluster_num_
         else
             log_weight = younger_clusters_log_weight
         end
+
         return log_weight
     end
 end
@@ -287,49 +314,57 @@ function compute_existing_cluster_weights(observation::Int64, assignment::Vector
     return log_weights
 end
 
-function compute_gaussian_posterior_parameters(data_mean::Vector{Float64}, n::Int64)
+function compute_gaussian_posterior_parameters!(cluster::Int64, cluster_means::Matrix{Float64}, 
+                                                cluster_num_observations::Vector{Int64}, 
+                                                posterior_means::Matrix{Float64}, posterior_covs::Matrix{Float64})
+    data_mean = vec(cluster_means[:, cluster])
+    n = cluster_num_observations[cluster]
     dim = length(data_mean)
     prior_mean = zeros(dim)
     if n > 0
         data_precision = inv(0.1I)
         cov = inv(I + n*data_precision)
-        posterior_mean = cov*(I*prior_mean + n*data_precision*data_mean) 
-        return posterior_mean, cov
+        posterior_mean = cov*(I*prior_mean + n*data_precision*data_mean)
     else
-        return prior_mean, I 
+        posterior_mean = prior_mean
+        cov = I
     end
+    posterior_means[:, cluster] = vec(posterior_mean)
+    posterior_covs[:, cluster] = vec(Matrix{Float64}(cov, dim, dim))
 end
 
-function compute_gaussian_log_predictive(datum::Vector{Float64}, cluster_mean::Vector{Float64}, num_observations::Int64)
-    posterior_mean, cov = compute_gaussian_posterior_parameters(cluster_mean, num_observations)
-    posterior = MvNormal(posterior_mean, cov)
-    value = logpdf(posterior, datum)
-    return value
+function compute_gaussian_log_predictive(datum::Vector{Float64}, posterior_mean::Vector{Float64}, 
+                                         posterior_cov::Matrix{Float64})
+    posterior = MvNormal(posterior_mean, 0.1I + posterior_cov)
+    return logpdf(posterior, datum)
 end
 
 function compute_data_log_predictive(observation::Int64, clusters::Vector{Int64}, data::Matrix{Float64}, 
-                                     cluster_num_observations::Vector{Int64}, cluster_means::Matrix{Float64})
+                                     posterior_means::Matrix{Float64}, posterior_covs::Matrix{Float64})
     num_clusters = length(clusters)
     log_predictive = Array{Float64}(undef, num_clusters)
     datum = vec(data[:, observation])
+    dim = length(datum)
     for i = 1:num_clusters
         cluster = clusters[i]
-        cluster_mean = cluster_means[:, cluster]
-        num_observations = cluster_num_observations[cluster]
-        datum = data[:, observation]
-        log_predictive[i] = compute_gaussian_log_predictive(datum, cluster_mean, num_observations)
+        posterior_mean = vec(posterior_means[:, cluster])
+        posterior_cov = reshape(posterior_covs[:, cluster], dim, dim)
+        log_predictive[i] = compute_gaussian_log_predictive(datum, posterior_mean, posterior_cov)
     end
     return log_predictive
 end
 
 function get_clusters(assignment::Vector{Int64})
+    # We represent an observation not assigned to a cluster by n+1
     assigned = assignment .<= length(assignment)
     return sort(unique(assignment[assigned]))
 end
 
 function gibbs_move!(observation::Int64, data::Matrix{Float64}, instances::Matrix{Int64}, iteration::Int64, 
-                     cluster_num_observations::Vector{Int64}, cluster_means::Matrix{Float64})
-    remove_observation!(observation, instances, iteration, data, cluster_num_observations, cluster_means)
+                     cluster_num_observations::Vector{Int64}, cluster_means::Matrix{Float64},
+                     posterior_means::Matrix{Float64}, posterior_covs::Matrix{Float64})
+    remove_observation!(observation, instances, iteration, data, cluster_num_observations, cluster_means, 
+                        posterior_means, posterior_covs)
     assignment = instances[:, iteration]
     clusters = get_clusters(assignment)
     n = size(data)[2]
@@ -342,10 +377,11 @@ function gibbs_move!(observation::Int64, data::Matrix{Float64}, instances::Matri
     weights = Array{Float64}(undef, num_clusters+1)
     weights[1:num_clusters] = compute_existing_cluster_weights(observation, assignment, cluster_num_observations)
     weights[num_clusters+1] = geometric_new_log_weight(n, num_clusters)
-    weights += compute_data_log_predictive(observation, choices, data, cluster_num_observations, cluster_means)
+    weights += compute_data_log_predictive(observation, choices, data, posterior_means, posterior_covs)
 
     cluster = gumbel_max(choices, weights)
-    add_observation!(observation, cluster, instances, iteration, data, cluster_num_observations, cluster_means)
+    add_observation!(observation, cluster, instances, iteration, data, cluster_num_observations, cluster_means,
+                     posterior_means, posterior_covs)
 end
 
 end
