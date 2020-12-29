@@ -420,12 +420,22 @@ function compute_co_occurrence_matrix(markov_chain::Matrix{Int64})
     n = size(markov_chain)[1]
     co_occurrence_matrix = zeros(Int64, n, n)
     num_instances = size(markov_chain)[2]
-    for i = 2:num_instances
+    for i = 1:num_instances
         assignment = markov_chain[:, i]
         ohe_assignment = one_hot_encode(assignment)
         co_occurrence_matrix += transpose(ohe_assignment) * ohe_assignment
     end
     return co_occurrence_matrix
+end
+
+function plot_co_occurrence_matrix(markov_chain::Matrix{Int64})
+    co_occurrence_matrix = compute_co_occurrence_matrix(markov_chain)
+    gr()
+    heatmap(1:size(co_occurrence_matrix,1),
+        1:size(co_occurrence_matrix,2), co_occurrence_matrix,
+        c=cgrad([:blue, :white,:red, :yellow]),
+        xlabel="Observations", ylabel="Observations",
+        title="Co-occurrence Matrix")
 end
 
 end
