@@ -423,7 +423,6 @@ function compute_co_occurrence_matrix(markov_chain::Matrix{Int64})
     for i = 2:num_instances
         assignment = markov_chain[:, i]
         ohe_assignment = one_hot_encode(assignment)
-        cross_product = ohe_assignment * transpose(ohe_assignment)
         co_occurrence_matrix += transpose(ohe_assignment) * ohe_assignment
     end
     return co_occurrence_matrix
