@@ -1,4 +1,4 @@
-module Ntl
+module NtlMixture
 
 using DataFrames
 using Distributions
@@ -60,7 +60,7 @@ function sample_clusters(arrivals::Array{Int64})
     return cluster_assignments 
 end
 
-function generate_mixture(n::Int64, dim::Int64, variance::Float64=0.1)
+function generate(n::Int64, dim::Int64, variance::Float64=0.1)
     phi_distribution = Beta(1, 1)
     phi = reshape(rand(phi_distribution, 1), 1)[1] 
     arrivals = rand(Binomial(1, phi), n-1)
@@ -99,7 +99,7 @@ end
 
 ## Mixture Fitter
 
-function fit_mixture(data::Matrix, iterations::Int64)
+function fit(data::Matrix, iterations::Int64)
     n = size(data)[2]
     dim = size(data)[1]
     instances = Array{Int64}(undef, n, iterations)
@@ -114,26 +114,32 @@ function fit_mixture(data::Matrix, iterations::Int64)
         posterior_covs[:, i] = vec(Matrix{Float64}(I, dim, dim))
     end
     compute_gaussian_posterior_parameters!(1, cluster_means, cluster_num_observations, posterior_means, posterior_covs)
-    for i = 2:iterations
-        gibbs_sample!(instances, i, data, cluster_num_observations, cluster_means, posterior_means, posterior_covs)
-    end
+    gibbs_sample!(instances, iterations, data, cluster_num_observations, cluster_means, posterior_means, 
+                  posterior_covs)
     instances = DataFrame(instances)
     return instances
 end
 
-function gibbs_sample!(instances::Matrix{Int64}, iteration::Int64, data::Matrix{Float64}, num_clusters::Vector{Int64},
-                       cluster_means::Matrix{Float64}, posterior_means::Matrix{Float64}, 
-                       posterior_covs::Matrix{Float64})
-    instances[:, iteration] = instances[:, iteration-1]
-    for observation = 1:size(instances)[1]
-        gibbs_move!(observation, data, instances, iteration, num_clusters, cluster_means, posterior_means, 
-                    posterior_covs)
+function gibbs_sample!(instances::Matrix{Int64}, iterations::Int64, data::Matrix{Float64}, 
+                       cluster_num_observations::Vector{Int64}, cluster_means::Matrix{Float64}, 
+                       posterior_means::Matrix{Float64}, posterior_covs::Matrix{Float64})
+    for iteration = 2:iterations
+        instances[:, iteration] = instances[:, iteration-1]
+        for observation = 1:size(instances)[1]
+            remove_observation!(observation, instances, iteration, data, cluster_num_observations, cluster_means, 
+                                posterior_means, posterior_covs)
+            (cluster, weight) = gibbs_move(observation, data, instances, iteration, cluster_num_observations, 
+                                           posterior_means, posterior_covs)
+            add_observation!(observation, cluster, instances, iteration, data, cluster_num_observations, cluster_means,
+                             posterior_means, posterior_covs)
+        end
     end
 end
 
 function gumbel_max(objects::Vector{Int64}, weights::Vector{Float64})
     gumbel_values = rand(Gumbel(0, 1), length(weights))
-    return objects[argmax(gumbel_values + weights)]
+    index = argmax(gumbel_values + weights)
+    return (objects[index], weights[index])
 end
 
 function update_gaussian_sufficient_statistics!(cluster::Int64, cluster_means::Matrix{Float64}, datum::Vector{Float64}, 
@@ -164,8 +170,8 @@ function remove_observation!(observation::Int64, instances::Matrix{Int64}, itera
     num_obs = cluster_num_observations[cluster]
     compute_gaussian_posterior_parameters!(cluster, cluster_means, cluster_num_observations, posterior_means, 
                                            posterior_covs)
-    dim = length(datum)
     if (cluster === observation) && (cluster_num_observations[cluster] > 0)
+        dim = length(datum)
         assigned_to_cluster = instances[:, iteration] .=== cluster
         new_cluster_time = findfirst(assigned_to_cluster)
         instances[assigned_to_cluster, iteration] .= new_cluster_time 
@@ -225,9 +231,8 @@ function compute_num_observations(cluster::Int64, assignment::Vector{Int64})
 end
 
 function compute_num_complement(cluster::Int64, cluster_num_observations::Vector{Int64}, observation::Int64)
-    num_complement = -(cluster - 1)
     younger_clusters = 1:(cluster-1)
-    num_complement += sum(cluster_num_observations[younger_clusters])
+    num_complement = sum(cluster_num_observations[younger_clusters]) -(cluster - 1)
     if observation < cluster
         num_complement += 1
     end
@@ -243,61 +248,85 @@ function compute_psi_posterior(cluster::Int64, cluster_num_observations::Vector{
     return psi_posterior
 end
 
-function compute_ntl_predictive(observation::Int64, cluster::Int64, cluster_num_observations::Vector{Int64})
-    if cluster < observation
-        log_weight = 0
+function compute_ntl_predictive!(observation::Int64, clusters::Vector{Int64}, cluster_num_observations::Vector{Int64},
+                                 log_weights::Vector{Float64})
+    # Not strictly the number of observations
+    n = maximum(clusters)
+    n = maximum([n, observation])
+    cluster_log_weights = zeros(Float64, n)
+    complement_log_weights = zeros(Float64, n)
+    psi_parameters = Array{Int64}(undef, 2, n)
+    logbetas = Array{Float64}(undef, n)
+    new_num_complement = compute_num_complement(observation, cluster_num_observations, observation)
+
+    younger_cluster_new_psi = Array{Float64}(undef, 2)
+    cluster_new_psi = Array{Float64}(undef, 2)
+
+    for cluster = clusters
         if cluster > 1
             cluster_psi = compute_psi_posterior(cluster, cluster_num_observations, observation)
-            log_weight += log(cluster_psi[1]) - log(cluster_psi[1] + cluster_psi[2])
-        end
-        # Clusters younger than the current cluster
-        younger_clusters = (cluster+1):(observation-1)
-        for younger_cluster = younger_clusters
-            younger_cluster_psi = compute_psi_posterior(younger_cluster, cluster_num_observations, observation)
-            log_weight += log(younger_cluster_psi[2]) - log(younger_cluster_psi[1] + younger_cluster_psi[2])
-        end
-        return log_weight
-    else # observation < cluster
-        cluster_num_obs = cluster_num_observations[cluster]
-        cluster_old_psi = compute_psi_posterior(cluster, cluster_num_observations, observation)
-        # Clusters younger than the observation
-        younger_clusters = (observation+1):(cluster-1)
-        if cluster_num_observations[1] === 0
-            youngest_cluster = 2
-        else
-            youngest_cluster = 1
-        end
-
-        younger_clusters_log_weight = 0
-        for younger_cluster = younger_clusters
-            younger_cluster_old_psi = compute_psi_posterior(younger_cluster, cluster_num_observations, observation)
-            younger_cluster_new_psi = deepcopy(younger_cluster_old_psi)
-            if observation === 1 && younger_cluster === youngest_cluster
-                younger_cluster_new_psi[1] = cluster_num_obs + 1 
-                younger_cluster_old_psi = cluster_old_psi
-            else
-                younger_cluster_new_psi[1] += cluster_num_obs
+            psi_parameters[:, cluster] = cluster_psi
+            denom = cluster_psi[1] + cluster_psi[2]
+            log_denom = log(denom)
+            cluster_log_weights[cluster] = log(cluster_psi[1]) - log_denom
+            complement_log_weights[cluster] = log(cluster_psi[2]) - log_denom
+            if observation < cluster
+                logbetas[cluster] = logbeta(cluster_psi[1], cluster_psi[2])
             end
-            new_a = younger_cluster_new_psi[1]
-            new_b = younger_cluster_new_psi[2]
-            old_a = younger_cluster_old_psi[1]
-            old_b = younger_cluster_old_psi[2]
-            younger_clusters_log_weight += logbeta(new_a, new_b) - logbeta(old_a, old_b)
         end
+    end
 
-        if observation > youngest_cluster
-            cluster_new_psi = deepcopy(cluster_old_psi)
-            cluster_new_psi[1] += 1
-            cluster_new_psi[2] = compute_num_complement(observation, cluster_num_observations, observation) + 1
-            new = cluster_new_psi
-            old = cluster_old_psi
-            cluster_log_weight = logbeta(new[1], new[2]) - logbeta(old[1], old[2])
-            log_weight = cluster_log_weight + younger_clusters_log_weight
-        else
-            log_weight = younger_clusters_log_weight
+    for (i, cluster) = enumerate(clusters)
+        if cluster < observation
+            log_weight = 0
+            if cluster > 1
+                log_weight += cluster_log_weights[cluster]
+            end
+            # Clusters younger than the current cluster
+            younger_clusters = (cluster+1):(observation-1)
+            log_weight += sum(complement_log_weights[younger_clusters])
+            log_weights[i] = log_weight
+        else # observation < cluster
+            cluster_num_obs = cluster_num_observations[cluster]
+            cluster_old_psi = psi_parameters[:, cluster]
+
+            # Clusters younger than the observation
+            younger_clusters = (observation+1):(cluster-1)
+            younger_clusters = younger_clusters[cluster_num_observations[younger_clusters] .> 0]
+
+            if cluster_num_observations[1] === 0
+                youngest_cluster = 2
+            else
+                youngest_cluster = 1
+            end
+
+            younger_clusters_log_weight = 0
+            for younger_cluster = younger_clusters
+                younger_cluster_old_psi = psi_parameters[:, younger_cluster]
+                younger_cluster_new_psi[1] = younger_cluster_old_psi[1]
+                younger_cluster_new_psi[2] = younger_cluster_old_psi[2]
+                if observation === 1 && younger_cluster === youngest_cluster
+                    younger_cluster_new_psi[1] = cluster_num_obs + 1 
+                    younger_cluster_old_psi = cluster_old_psi
+                else
+                    younger_cluster_new_psi[1] += cluster_num_obs
+                end
+                new_a = younger_cluster_new_psi[1]
+                new_b = younger_cluster_new_psi[2]
+                younger_clusters_log_weight += logbeta(new_a, new_b) - logbetas[younger_cluster]
+            end
+
+            if observation > youngest_cluster
+                cluster_new_psi[1] = cluster_old_psi[1] + 1
+                cluster_new_psi[2] = new_num_complement + 1
+                new = cluster_new_psi
+                cluster_log_weight = logbeta(new[1], new[2]) - logbetas[cluster]
+                log_weight = cluster_log_weight + younger_clusters_log_weight
+            else
+                log_weight = younger_clusters_log_weight
+            end
+            log_weights[i] = log_weight
         end
-
-        return log_weight
     end
 end
 
@@ -305,11 +334,8 @@ function compute_existing_cluster_weights(observation::Int64, assignment::Vector
                                           cluster_num_observations::Vector{Int64})
     clusters = get_clusters(assignment)
     num_clusters = length(clusters)
-    log_weights = Array{Float64}(undef, num_clusters)
-    for i = 1:num_clusters
-        cluster = clusters[i]
-        log_weights[i] = compute_ntl_predictive(observation, cluster, cluster_num_observations)
-    end
+    log_weights = Array{Float64}(undef, length(clusters))
+    compute_ntl_predictive!(observation, clusters, cluster_num_observations, log_weights)
     log_weights .+= geometric_existing_log_weight(length(assignment), num_clusters)
     return log_weights
 end
@@ -355,16 +381,14 @@ function compute_data_log_predictive(observation::Int64, clusters::Vector{Int64}
 end
 
 function get_clusters(assignment::Vector{Int64})
-    # We represent an observation not assigned to a cluster by n+1
+    # We represent the observation not assigned to a cluster, if it exists, by n+1
     assigned = assignment .<= length(assignment)
-    return sort(unique(assignment[assigned]))
+    return unique(sort(assignment[assigned]))
 end
 
-function gibbs_move!(observation::Int64, data::Matrix{Float64}, instances::Matrix{Int64}, iteration::Int64, 
-                     cluster_num_observations::Vector{Int64}, cluster_means::Matrix{Float64},
-                     posterior_means::Matrix{Float64}, posterior_covs::Matrix{Float64})
-    remove_observation!(observation, instances, iteration, data, cluster_num_observations, cluster_means, 
-                        posterior_means, posterior_covs)
+function gibbs_move(observation::Int64, data::Matrix{Float64}, instances::Matrix{Int64}, iteration::Int64, 
+                    cluster_num_observations::Vector{Int64}, posterior_means::Matrix{Float64}, 
+                    posterior_covs::Matrix{Float64})
     assignment = instances[:, iteration]
     clusters = get_clusters(assignment)
     n = size(data)[2]
@@ -378,10 +402,31 @@ function gibbs_move!(observation::Int64, data::Matrix{Float64}, instances::Matri
     weights[1:num_clusters] = compute_existing_cluster_weights(observation, assignment, cluster_num_observations)
     weights[num_clusters+1] = geometric_new_log_weight(n, num_clusters)
     weights += compute_data_log_predictive(observation, choices, data, posterior_means, posterior_covs)
+    return gumbel_max(choices, weights)
+end
 
-    cluster = gumbel_max(choices, weights)
-    add_observation!(observation, cluster, instances, iteration, data, cluster_num_observations, cluster_means,
-                     posterior_means, posterior_covs)
+function one_hot_encode(assignments::Vector{Int64})
+    n = length(assignments)
+    youngest_cluster = maximum(assignments)
+    encoding_matrix = zeros(Int64, youngest_cluster, n)
+    for observation = 1:n
+        cluster = assignments[observation]
+        encoding_matrix[cluster, observation] = 1
+    end
+    return Matrix(encoding_matrix)
+end
+
+function compute_co_occurrence_matrix(markov_chain::Matrix{Int64})
+    n = size(markov_chain)[1]
+    co_occurrence_matrix = zeros(Int64, n, n)
+    num_instances = size(markov_chain)[2]
+    for i = 2:num_instances
+        assignment = markov_chain[:, i]
+        ohe_assignment = one_hot_encode(assignment)
+        cross_product = ohe_assignment * transpose(ohe_assignment)
+        co_occurrence_matrix += transpose(ohe_assignment) * ohe_assignment
+    end
+    return co_occurrence_matrix
 end
 
 end
