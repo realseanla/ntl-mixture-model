@@ -1,7 +1,6 @@
-module NtlPlots
+module Plot
 
-include("utils.jl")
-using .NtlUtils: compute_co_occurrence_matrix
+using ..Utils: compute_co_occurrence_matrix
 using Plots
 
 function plot_assignments(assignments::Vector{Int64})

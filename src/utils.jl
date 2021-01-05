@@ -1,4 +1,4 @@
-module NtlUtils
+module Utils
 
 function one_hot_encode(assignments::Vector{Int64})
     n = length(assignments)

@@ -1,5 +1,7 @@
-module NtlSynthetic
+module Generate
 
+using ..Models: ClusterParameters, DataParameters, GaussianParameters, GeometricArrivals, NtlParameters
+using ..Models: ArrivalDistribution
 using Distributions
 using LinearAlgebra
 using DataFrames
@@ -25,13 +27,14 @@ function generate_log_pmfs(psi_variates::Array{Float64})
     return log_pmfs
 end
 
-function sample_clusters(arrivals::Array{Int64})
+function sample_clusters(arrivals::Array{Int64}, cluster_parameters::ClusterParameters)
     n = length(arrivals)
     cluster_assignments = Array{Int64}(undef, n)
     num_clusters = sum(arrivals) 
     new_cluster_indices = arrivals .=== 1
     arrival_times = (1:n)[new_cluster_indices]
-    psi_variates  = rand(Beta(1, 1), num_clusters)
+    psi_prior = cluster_parameters.prior
+    psi_variates  = rand(Beta(psi_prior[1], psi_prior[2]), num_clusters)
     psi_variates[1] = 1 
 
     log_pmfs = generate_log_pmfs(psi_variates)
@@ -55,27 +58,40 @@ function sample_clusters(arrivals::Array{Int64})
     return cluster_assignments 
 end
 
-function generate(n::Int64, dim::Int64, variance::Float64=0.1)
-    phi = reshape(rand(Beta(1,1), 1), 1)[1] 
+function sample_cluster_parameters(num_clusters, data_parameters::GaussianParameters)
+    dist = MvNormal(data_parameters.prior_mean, data_parameters.prior_covariance)    
+    return rand(dist, num_clusters)
+end
+
+function sample_data(cluster::Int64, num_assigned::Int64, cluster_means::Matrix{Float64}, 
+                     data_parameters::GaussianParameters)
+    cluster_mean = vec(cluster_means[:, cluster])
+    normal_distribution = MvNormal(cluster_mean, data_parameters.data_covariance)
+    cluster_data = rand(normal_distribution, num_assigned)
+    return cluster_data
+end
+
+function generate_arrival_times(n::Int64, arrival_distribution::GeometricArrivals)
+    arrival_prior = arrival_distribution.prior
+    phi = reshape(rand(Beta(arrival_prior[1], arrival_prior[2]), 1), 1)[1] 
     arrivals = rand(Binomial(1, phi), n-1)
     prepend!(arrivals, [1])
+    return arrivals
+end
+
+function generate(n::Int64, data_parameters::DataParameters, cluster_prior_parameters::ClusterParameters)
+    dim = size(data_parameters.data_covariance)[1]
+    arrivals = generate_arrival_times(n, cluster_prior_parameters.arrival_distribution)
     num_clusters = sum(arrivals)
-
-    assignments = sample_clusters(arrivals)
-
-    prior_mean = vec(zeros(dim, 1))
-    prior_cov = I
-    cluster_means = rand(MvNormal(prior_mean, prior_cov), num_clusters)
-
-    data_covariance = variance*I 
+    assignments = sample_clusters(arrivals, cluster_prior_parameters)
     data = Array{Float64}(undef, dim, n)
+
+    cluster_parameters = sample_cluster_parameters(num_clusters, data_parameters)
 
     for cluster = 1:num_clusters
         assigned_to_cluster = (assignments .=== cluster) 
         num_assigned = count(assigned_to_cluster)
-        cluster_mean = vec(cluster_means[:, cluster])
-        normal_distribution = MvNormal(cluster_mean, data_covariance)
-        cluster_data = rand(normal_distribution, num_assigned)
+        cluster_data = sample_data(cluster, num_assigned, cluster_parameters, data_parameters)
         data[:, assigned_to_cluster] = cluster_data
     end
 
