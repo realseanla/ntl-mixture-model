@@ -24,7 +24,7 @@ function prepare_data_sufficient_statistics(data::Matrix{Float64}, data_paramete
     return GaussianSufficientStatistics(data_means, posterior_means, posterior_covs)
 end
 
-function prepare_cluster_sufficient_statistics(data::Matrix{Float64}, cluster_parameters::ClusterParameters)
+function prepare_cluster_sufficient_statistics(data::Matrix{Float64}, cluster_parameters::NtlParameters)
     n = size(data)[2]
     cluster_num_observations = Vector{Int64}(zeros(Int64, n))
     cluster_num_observations[1] = n
