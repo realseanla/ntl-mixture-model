@@ -24,7 +24,7 @@ function prepare_data_sufficient_statistics(data::Matrix{Float64}, data_paramete
     return GaussianSufficientStatistics(data_means, posterior_means, posterior_covs)
 end
 
-function prepare_cluster_sufficient_statistics(data::Matrix{Float64}, cluster_parameters::NtlParameters)
+function prepare_cluster_sufficient_statistics(::Type{T}, data::Matrix{Float64}) where {T <: NtlParameters}
     n = size(data)[2]
     cluster_num_observations = Vector{Int64}(zeros(Int64, n))
     cluster_num_observations[1] = n
@@ -33,12 +33,12 @@ function prepare_cluster_sufficient_statistics(data::Matrix{Float64}, cluster_pa
 end
 
 function fit(data::Matrix, data_parameters::DataParameters, cluster_parameters::ClusterParameters, 
-             num_instances::Int64, method::String)
+             num_instances::Int64; method::String="gibbs")
     n = size(data)[2]
     dim = size(data)[1]
     instances = Array{Int64}(undef, n, num_instances)
     instances[:, 1] .= 1
-    cluster_sufficient_stats = prepare_cluster_sufficient_statistics(data, cluster_parameters)
+    cluster_sufficient_stats = prepare_cluster_sufficient_statistics(typeof(cluster_parameters), data)
     data_sufficient_stats = prepare_data_sufficient_statistics(data, data_parameters)
     compute_data_posterior_parameters!(1, cluster_sufficient_stats, data_sufficient_stats, data_parameters)
     if method === "gibbs"
@@ -62,12 +62,12 @@ function gibbs_sample!(instances::Matrix{Int64}, data::Matrix{Float64},
         instances[:, iteration] = instances[:, iteration-1]
         for observation = 1:size(instances)[1]
             remove_observation!(observation, instances, iteration, data, cluster_sufficient_stats, 
-                                data_sufficient_stats, data_parameters, cluster_parameters)
+                                data_sufficient_stats, data_parameters)
             assignment = vec(instances[:, iteration])
             (cluster, weight) = gibbs_move(observation, data, assignment, cluster_sufficient_stats, 
                                            data_sufficient_stats, data_parameters, cluster_parameters)
             add_observation!(observation, cluster, instances, iteration, data, cluster_sufficient_stats, 
-                             data_sufficient_stats, data_parameters, cluster_parameters)
+                             data_sufficient_stats, data_parameters)
         end
     end
 end
@@ -80,8 +80,8 @@ end
 
 function update_data_sufficient_statistics!(data_sufficient_stats::GaussianSufficientStatistics, 
                                             cluster::Int64, datum::Vector{Float64}, 
-                                            cluster_sufficient_stats::ClusterSufficientStatistics, 
-                                            update_type::String)
+                                            cluster_sufficient_stats::ClusterSufficientStatistics; 
+                                            update_type::String="add")
     cluster_mean = vec(data_sufficient_stats.data_means[:, cluster])
     n = cluster_sufficient_stats.num_observations[cluster]
     if update_type == "add"
@@ -119,7 +119,7 @@ end
 function remove_observation!(observation::Int64, instances::Matrix{Int64}, iteration::Int64, 
                              data::Matrix{Float64}, cluster_sufficient_stats::ClusterSufficientStatistics, 
                              data_sufficient_stats::DataSufficientStatistics,
-                             data_parameters::DataParameters, cluster_parameters::ClusterParameters)
+                             data_parameters::DataParameters)
     cluster = instances[observation, iteration]
     instances[observation, iteration] = size(instances)[1] + 1 
     datum = vec(data[:, observation])
@@ -127,7 +127,8 @@ function remove_observation!(observation::Int64, instances::Matrix{Int64}, itera
     if cluster_sufficient_stats.num_observations[cluster] === 0
         cluster_sufficient_stats.num_clusters -= 1
     end
-    update_data_sufficient_statistics!(data_sufficient_stats, cluster, datum, cluster_sufficient_stats, "remove")
+    update_data_sufficient_statistics!(data_sufficient_stats, cluster, datum, cluster_sufficient_stats, 
+                                       update_type="remove")
     compute_data_posterior_parameters!(cluster, cluster_sufficient_stats, data_sufficient_stats, data_parameters)
     if (cluster === observation) && (cluster_sufficient_stats.num_observations[cluster] > 0)
         dim = length(datum)
@@ -142,7 +143,7 @@ end
 function add_observation!(observation::Int64, cluster::Int64, instances::Matrix{Int64}, iteration::Int64, 
                           data::Matrix{Float64}, cluster_sufficient_stats::ClusterSufficientStatistics,
                           data_sufficient_stats::DataSufficientStatistics, 
-                          data_parameters::DataParameters, cluster_parameters::ClusterParameters)
+                          data_parameters::DataParameters)
     if observation < cluster
         dim = size(data)[1]
         assigned_to_cluster = (instances[:, iteration] .=== cluster)
@@ -158,7 +159,8 @@ function add_observation!(observation::Int64, cluster::Int64, instances::Matrix{
     if cluster_sufficient_stats.num_observations[cluster] === 1
         cluster_sufficient_stats.num_clusters += 1
     end
-    update_data_sufficient_statistics!(data_sufficient_stats, cluster, datum, cluster_sufficient_stats, "add")
+    update_data_sufficient_statistics!(data_sufficient_stats, cluster, datum, cluster_sufficient_stats, 
+                                       update_type="add")
     compute_data_posterior_parameters!(cluster, cluster_sufficient_stats, data_sufficient_stats, data_parameters)
 end
 
