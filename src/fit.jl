@@ -5,13 +5,24 @@ using ..Models: DataSufficientStatistics, ClusterSufficientStatistics, GaussianS
 using ..Models: NtlSufficientStatistics, MultinomialParameters, MultinomialSufficientStatistics
 using Distributions
 using LinearAlgebra
-using SpecialFunctions
+using SpecialFunctions: logbeta, loggamma, logfactorial
 using Statistics
+
+logbeta(parameters::Vector{Float64}) = logbeta(parameters[1], parameters[2])
+
+function logmvbeta(parameters::Vector{T}) where {T <: Real}
+    return sum(loggamma.(parameters)) - loggamma(sum(parameters))
+end
+
+function log_multinomial_coeff(counts::Vector{Int64})
+    return logfactorial(sum(counts)) - sum(logfactorial.(counts)) 
+end
 
 function prepare_data_sufficient_statistics(data::Matrix{Float64}, data_parameters::GaussianParameters)
     dim = size(data)[1]
     n = size(data)[2]
     data_means = zeros(Float64, dim, n)
+    data_precision_quadratic_sums = zeros(Float64, n)
     posterior_means = Matrix{Float64}(undef, dim, n)
     for i = 1:n
         posterior_means[:, i] = data_parameters.prior_mean
@@ -20,7 +31,7 @@ function prepare_data_sufficient_statistics(data::Matrix{Float64}, data_paramete
     for i = 1:n
         posterior_covs[:, i] = vec(data_parameters.prior_covariance)
     end
-    return GaussianSufficientStatistics(data_means, posterior_means, posterior_covs)
+    return GaussianSufficientStatistics(data_means, data_precision_quadratic_sums, posterior_means, posterior_covs)
 end
 
 function prepare_data_sufficient_statistics(data::Matrix{Int64}, data_parameters::MultinomialParameters)
@@ -80,11 +91,94 @@ function gibbs_sample!(instances::Matrix{Int64}, data::Matrix{T}, data_parameter
     end
 end
 
+function compute_cluster_data_log_likelihood(cluster::Int64, data_sufficient_stats::MultinomialSufficientStatistics,
+                                             data_parameters::MultinomialParameters, 
+                                             ::ClusterSufficientStatistics)
+    dirichlet_posterior = data_sufficient_stats.posterior_dirichlet_scale[:, cluster]
+    dirichlet_prior = data_parameters.prior_dirichlet_scale
+    counts = convert(Vector{Int64}, dirichlet_posterior - dirichlet_prior)
+    log_likelihood = log_multinomial_coeff(counts) + logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
+end
+
+function compute_cluster_data_log_likelihood(cluster::Int64, data_sufficient_stats::GaussianSufficientStatistics, 
+                                             data_parameters::GaussianParameters, 
+                                             cluster_sufficient_stats::ClusterSufficientStatistics)
+    posterior_mean = vec(data_sufficient_stats.posterior_means[:, cluster])
+    dim = length(posterior_mean)
+    posterior_covariance = reshape(data_sufficient_stats.posterior_covs[cluster], dim, dim)
+    posterior_precision = inv(posterior_covariance)
+    prior_mean = data_parameters.prior_mean
+    prior_covariance = data_parameters.prior_covariance
+    prior_precision = inv(prior_covariance)
+
+    data_precision_quadratic_sum = data_sufficient_stats.data_precision_quadratic_sums[cluster]
+    posterior_quadratic = transpose(posterior_mean) * posterior_covariance * posterior_mean 
+    prior_quadratic = transpose(prior_mean) * prior_precision * prior_mean
+
+    log_likelihood -(1/2)*(data_precision_quadratic_sum + prior_quadratic - posterior_quadratic)
+
+    data_log_determinant = log(abs(det(data_parameters.data_covariance)))
+    prior_log_determinant = log(abs(det(prior_covariance)))
+    posterior_log_determinant = log(abs(det(posterior_covariance)))
+
+    n = cluster_sufficient_stats.num_observations[cluster]
+    log_likelihood += log(2*pi)*dim*(n + 1)/2 - (n/2)data_log_determinant - (1/2)prior_log_determinant
+    return log_likelihood
+end
+
+function compute_data_log_likelihood(data_sufficient_stats::DataSufficientStatistics, 
+                                     data_parameters::DataParameters, 
+                                     cluster_sufficient_stats::ClusterSufficientStatistics,
+                                     clusters::Vector{Int64})
+    log_likelihood = 0
+    for cluster = clusters
+        log_likelihood += compute_cluster_data_log_likelihood(cluster, data_sufficient_stats, data_parameters,
+                                                              cluster_sufficient_stats)
+    end
+    return log_likelihood
+end
+
+function compute_cluster_assignment_log_likelihood(cluster::Int64, cluster_sufficient_stats::NtlSufficientStatistics, 
+                                                   cluster_parameters::NtlParameters)
+    psi_posterior = compute_stick_breaking_posterior(cluster, cluster_sufficient_stats, cluster_parameters)
+    return logbeta(psi_posterior) - logbeta(cluster_parameters.prior)
+end
+
+function compute_arrivals_log_likelihood(cluster_sufficient_stats::NtlSufficientStatistics{T}, 
+                                         cluster_parameters::NtlParameters) where {T <: GeometricArrivals}
+    phi_posterior = compute_arrival_distribution_posterior(cluster_sufficient_stats, cluster_parameters)
+    return logbeta(phi_posterior) - logbeta(cluster_parameters.arrival_distribution.prior)
+end
+
+function compute_assignment_log_likelihood(cluster_sufficient_stats::ClusterSufficientStatistics, 
+                                           cluster_parameters::ClusterParameters, clusters::Vector{Int64})
+    log_likelihood = 0
+    for cluster = clusters
+        log_likelihood += compute_cluster_assignment_log_likelihood(cluster, cluster_sufficient_stats, 
+                                                                    cluster_parameters)
+    end
+    log_likelihood += compute_arrivals_log_likelihood(cluster_parameters, cluster_sufficient_stats)
+end
+
+function compute_joint_log_likelihood(data_sufficient_stats::DataSufficientStatistics, 
+                                      cluster_sufficient_stats::ClusterSufficientStatistics,
+                                      data_parameters::DataParameters,
+                                      cluster_parameters::ClusterParameters)
+    clusters = get_clusters(cluster_sufficient_stats.num_observations)
+    log_likelihood = compute_data_log_likelihood(data_sufficient_stats, data_parameters, cluster_sufficient_stats, 
+                                                 clusters)
+    log_likelihood += compute_assignment_log_likelihood(cluster_sufficient_stats, cluster_parameters, clusters)
+    return log_likelihood
+end
+
 function compute_log_weight!(log_weights::Vector{Float64}, log_likelihoods::Vector{Float64}, proposal_weight::Float64, 
-                             assignment::Vector{Int64}, data::Matrix{T}, particle::Int64) where {T <: Real}
+                             data_sufficient_stats::DataSufficientStatistics, 
+                             cluster_sufficient_stats::ClusterSufficientStatistics,
+                             data_parameters::DataParameters, cluster_parameters::ClusterParameters, particle::Int64)
     previous_log_weight = log_weights[particle]
     previous_log_likelihood = log_likelihoods[particle]
-    log_likelihood = compute_joint_log_likelihood(assignment, data)
+    log_likelihood = compute_joint_log_likelihood(data_sufficient_stats, cluster_sufficient_stats, data_parameters, 
+                                                  cluster_parameters)
     log_weights[particle] = previous_log_weight + log_likelihood - previous_log_likelihood - log(proposal_weight)
     log_likelihoods[particle] = log_likelihood
 end
@@ -120,7 +214,8 @@ function smc!(particles::Matrix{Int64}, data::Matrix{T}, data_parameters::DataPa
             add_observation!(observation, cluster, particles, particle, data, cluster_sufficient_stats, 
                              data_sufficient_stats, data_parameters)
             assignment = vec(particles[:, i])
-            compute_log_weight!(log_weights, log_likelihoods, proposal_weight, assignment, data, particle)
+            compute_log_weight!(log_weights, log_likelihoods, proposal_weight, data_sufficient_stats, 
+                                cluster_sufficient_stats, data_parameters, cluster_parameters, particle)
         end
         weights = exp.(log_weights)
         normalized_weights ./= sum(weights)
@@ -142,28 +237,34 @@ end
 
 function update_data_sufficient_statistics!(data_sufficient_stats::GaussianSufficientStatistics, 
                                             cluster::Int64, datum::Vector{Float64}, 
-                                            cluster_sufficient_stats::ClusterSufficientStatistics; 
-                                            update_type::String="add")
+                                            cluster_sufficient_stats::ClusterSufficientStatistics,
+                                            data_parameters::GaussianParameters; update_type::String="add")
     cluster_mean = vec(data_sufficient_stats.data_means[:, cluster])
+    data_precision_quadratic_sum = data_sufficient_stats.data_precision_quadratic_sums[cluster]
     n = cluster_sufficient_stats.num_observations[cluster]
+    datum_precision_quadratic_sum = transpose(datum)*data_parameters.data_precision*datum
     if update_type == "add"
         cluster_mean = (cluster_mean.*(n-1) + datum)./n
+        data_precision_quadratic_sum += datum_precision_quadratic_sum
     elseif update_type == "remove"
         if n > 0
             cluster_mean = (cluster_mean.*(n+1) - datum)./n
+            data_precision_quadratic_sum -= datum_precision_quadratic_sum
         else
             cluster_mean .= 0
+            data_precision_quadratic_sum = 0
         end
     else
         message = "$update_type is not a supported update type."
         throw(ArgumentError(message))
     end
     data_sufficient_stats.data_means[:, cluster] = cluster_mean
+    data_sufficient_stats.data_precision_quadratic_sums[cluster] = data_precision_quadratic_sum
 end
 
 function update_data_sufficient_statistics!(data_sufficient_stats::MultinomialSufficientStatistics,
-                                            cluster::Int64, datum::Vector{Int64}, ::ClusterSufficientStatistics;
-                                            update_type::String="add")
+                                            cluster::Int64, datum::Vector{Int64}, ::ClusterSufficientStatistics,
+                                            ::MultinomialParameters; update_type::String="add")
     cluster_counts = vec(data_sufficient_stats.total_counts[:, cluster])
     if update_type === "add"
         cluster_counts += datum 
@@ -183,8 +284,7 @@ function update_cluster_stats_new_birth_time!(cluster_sufficient_stats::ClusterS
 end
 
 function update_data_stats_new_birth_time!(data_sufficient_stats::GaussianSufficientStatistics, 
-                                           new_time::Int64, old_time::Int64, 
-                                           data_parameters::GaussianParameters)
+                                           new_time::Int64, old_time::Int64, data_parameters::GaussianParameters)
     data_sufficient_stats.data_means[:, new_time] = data_sufficient_stats.data_means[:, old_time]
     data_sufficient_stats.data_means[:, old_time] .= 0
     data_sufficient_stats.posterior_means[:, new_time] = data_sufficient_stats.posterior_means[:, old_time]
@@ -194,16 +294,15 @@ function update_data_stats_new_birth_time!(data_sufficient_stats::GaussianSuffic
 end
 
 function update_data_stats_new_birth_time!(data_sufficient_stats::MultinomialSufficientStatistics, 
-                                           new_time::Int64, old_time::Int64, 
-                                           data_parameters::MultinomialParameters)
+                                           new_time::Int64, old_time::Int64, data_parameters::MultinomialParameters)
     data_sufficient_stats.total_counts[:, new_time] = data_sufficient_stats.total_counts[:, old_time]
     data_sufficient_stats.total_counts[:, old_time] .= 0
     data_sufficient_stats.posterior_dirichlet_scale[:, new_time] = data_sufficient_stats.posterior_dirichlet_scale[:, old_time]
     data_sufficient_stats.posterior_dirichlet_scale[:, old_time] = data_parameters.prior_dirichlet_scale
 end
 
-function remove_observation!(observation::Int64, instances::Matrix{Int64}, iteration::Int64, 
-                             data::Matrix{T}, cluster_sufficient_stats::ClusterSufficientStatistics, 
+function remove_observation!(observation::Int64, instances::Matrix{Int64}, iteration::Int64, data::Matrix{T}, 
+                             cluster_sufficient_stats::ClusterSufficientStatistics, 
                              data_sufficient_stats::DataSufficientStatistics,
                              data_parameters::DataParameters) where {T <: Real}
     cluster = instances[observation, iteration]
@@ -213,7 +312,7 @@ function remove_observation!(observation::Int64, instances::Matrix{Int64}, itera
     if cluster_sufficient_stats.num_observations[cluster] === 0
         cluster_sufficient_stats.num_clusters -= 1
     end
-    update_data_sufficient_statistics!(data_sufficient_stats, cluster, datum, cluster_sufficient_stats, 
+    update_data_sufficient_statistics!(data_sufficient_stats, cluster, datum, cluster_sufficient_stats, data_parameters, 
                                        update_type="remove")
     compute_data_posterior_parameters!(cluster, cluster_sufficient_stats, data_sufficient_stats, data_parameters)
     if (cluster === observation) && (cluster_sufficient_stats.num_observations[cluster] > 0)
@@ -245,45 +344,51 @@ function add_observation!(observation::Int64, cluster::Int64, instances::Matrix{
     if cluster_sufficient_stats.num_observations[cluster] === 1
         cluster_sufficient_stats.num_clusters += 1
     end
-    update_data_sufficient_statistics!(data_sufficient_stats, cluster, datum, cluster_sufficient_stats, 
+    update_data_sufficient_statistics!(data_sufficient_stats, cluster, datum, cluster_sufficient_stats, data_parameters, 
                                        update_type="add")
     compute_data_posterior_parameters!(cluster, cluster_sufficient_stats, data_sufficient_stats, data_parameters)
 end
 
-function new_cluster_log_predictive(cluster_sufficient_stats::NtlSufficientStatistics, 
-                                    cluster_parameters::ClusterParameters)
+function compute_arrival_distribution_posterior(cluster_sufficient_stats::NtlSufficientStatistics{T},
+                                                cluster_parameters::NtlParameters) where {T <: GeometricArrivals}
     n = length(cluster_sufficient_stats.num_observations)
     num_clusters = cluster_sufficient_stats.num_clusters
-    phi_prior_a = cluster_parameters.arrival_distribution.prior[1]
-    phi_prior_b = cluster_parameters.arrival_distribution.prior[2]
-    return log(num_clusters - 1 + phi_prior_a) - log(n - 1 + phi_prior_a + phi_prior_b)
+    phi_posterior = cluster_parameters.arrival_distribution.prior
+    phi_posterior[1] += num_clusters - 1
+    phi_posterior[2] += n - num_clusters 
+    return phi_posterior
 end
 
-function existing_cluster_log_predictive(cluster_sufficient_stats::NtlSufficientStatistics, 
-                                         cluster_parameters::ClusterParameters)
-    n = length(cluster_sufficient_stats.num_observations)
-    num_clusters = cluster_sufficient_stats.num_clusters
-    phi_prior_a = cluster_parameters.arrival_distribution.prior[1]
-    phi_prior_b = cluster_parameters.arrival_distribution.prior[2]
-    return log(n - num_clusters + phi_prior_a) - log(n - 1 + phi_prior_a + phi_prior_b)
+function new_cluster_log_predictive(cluster_sufficient_stats::NtlSufficientStatistics{T}, 
+                                    cluster_parameters::NtlParameters) where {T <: GeometricArrivals}
+    phi_posterior = compute_arrival_distribution_posterior(cluster_sufficient_stats, cluster_parameters)
+    return log(phi_posterior[1]) - log(sum(phi_posterior))
 end
 
-function compute_num_complement(cluster::Int64, cluster_num_observations::Vector{Int64}, observation::Int64)
+function existing_cluster_log_predictive(cluster_sufficient_stats::NtlSufficientStatistics{T}, 
+                                         cluster_parameters::NtlParameters) where {T <: GeometricArrivals}
+    phi_posterior = compute_arrival_distribution_posterior(cluster_sufficient_stats, cluster_parameters)
+    return log(phi_posterior[2]) - log(sum(phi_posterior))
+end
+
+function compute_num_complement(cluster::Int64, cluster_num_observations::Vector{Int64}; 
+                                observation::Union{Int64, Nothing}=nothing)
     younger_clusters = 1:(cluster-1)
     num_complement = sum(cluster_num_observations[younger_clusters]) - (cluster - 1)
-    if observation < cluster
+    if observation !== nothing && observation < cluster
         num_complement += 1
     end
     return num_complement
 end
 
-function compute_psi_posterior(cluster::Int64, ntl_sufficient_stats::NtlSufficientStatistics, observation::Int64, 
-                               ntl_parameters::NtlParameters)
+function compute_stick_breaking_posterior(cluster::Int64, ntl_sufficient_stats::NtlSufficientStatistics, 
+                               ntl_parameters::NtlParameters; observation::Union{Int64, Nothing}=nothing)
     psi_posterior = Array{Int64}(undef, 2)
     psi_prior_a = ntl_parameters.prior[1]
     psi_prior_b = ntl_parameters.prior[2] 
     psi_posterior[1] = ntl_sufficient_stats.num_observations[cluster] - 1 + psi_prior_a
-    psi_posterior[2] = compute_num_complement(cluster, ntl_sufficient_stats.num_observations, observation) + psi_prior_b
+    psi_posterior[2] = compute_num_complement(cluster, ntl_sufficient_stats.num_observations, observation=observation) 
+    psi_posterior[2] += psi_prior_b
     return psi_posterior
 end
 
@@ -296,21 +401,22 @@ function compute_cluster_log_predictives!(log_weights::Vector{Float64}, observat
     complement_log_weights = zeros(Float64, n)
     psi_parameters = Array{Int64}(undef, 2, n)
     logbetas = Array{Float64}(undef, n)
-    new_num_complement = compute_num_complement(observation, ntl_sufficient_stats.num_observations, observation)
-
+    new_num_complement = compute_num_complement(observation, ntl_sufficient_stats.num_observations, 
+                                                observation=observation)
     younger_cluster_new_psi = Array{Float64}(undef, 2)
     cluster_new_psi = Array{Float64}(undef, 2)
 
     for cluster = clusters
         if cluster > 1
-            cluster_psi = compute_psi_posterior(cluster, ntl_sufficient_stats, observation, ntl_parameters)
+            cluster_psi = compute_stick_breaking_posterior(cluster, ntl_sufficient_stats, ntl_parameters, 
+                                                           observation=observation)
             psi_parameters[:, cluster] = cluster_psi
             denom = cluster_psi[1] + cluster_psi[2]
             log_denom = log(denom)
             cluster_log_weights[cluster] = log(cluster_psi[1]) - log_denom
             complement_log_weights[cluster] = log(cluster_psi[2]) - log_denom
             if observation < cluster
-                logbetas[cluster] = logbeta(cluster_psi[1], cluster_psi[2])
+                logbetas[cluster] = logbeta(cluster_psi)
             end
         end
     end

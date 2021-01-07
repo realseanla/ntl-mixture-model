@@ -14,6 +14,7 @@ abstract type DataParameters <: ModelParameters end
 struct GaussianParameters <: DataParameters
     dim::Int64
     data_covariance::Matrix{Float64}
+    data_precision::Matrix{Float64}
     prior_mean::Vector{Float64}
     prior_covariance::Matrix{Float64}
     function GaussianParameters(data_covariance::Matrix{Float64},
@@ -26,7 +27,8 @@ struct GaussianParameters <: DataParameters
         if dim !== size(prior_covariance)[1] || dim !== size(prior_covariance)[2] 
             error("Dimension of mean prior must match each dimension of prior covariance")
         end
-        return new(dim, data_covariance, prior_mean, prior_covariance)
+        data_precision = inv(data_covariance)
+        return new(dim, data_covariance, data_precision, prior_mean, prior_covariance)
     end
 end
 
@@ -82,9 +84,11 @@ abstract type DataSufficientStatistics <: SufficientStatistics end
 
 struct GaussianSufficientStatistics <: DataSufficientStatistics
     data_means::Matrix{Float64}
+    data_precision_quadratic_sums::Vector{Float64}
     posterior_means::Matrix{Float64}
     posterior_covs::Matrix{Float64}
     function GaussianSufficientStatistics(data_means::Matrix{Float64}, 
+                                          data_precision_quadratic_sum::Vector{Float64},
                                           posterior_means::Matrix{Float64}, 
                                           posterior_covs::Matrix{Float64})
         # Make sure dimensions match
@@ -95,7 +99,7 @@ struct GaussianSufficientStatistics <: DataSufficientStatistics
         if size(posterior_covs)[1] !== dim^2
             error("Dimension of covariances must be square of dimension of means")
         end
-        return new(data_means, posterior_means, posterior_covs)
+        return new(data_means, data_precision_quadratic_sum, posterior_means, posterior_covs)
     end
 end
 
