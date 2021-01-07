@@ -2,7 +2,7 @@ module Fitter
 
 using ..Models: ModelParameters, DataParameters, ClusterParameters, GaussianParameters, NtlParameters
 using ..Models: DataSufficientStatistics, ClusterSufficientStatistics, GaussianSufficientStatistics
-using ..Models: NtlSufficientStatistics
+using ..Models: NtlSufficientStatistics, MultinomialParameters, MultinomialSufficientStatistics
 using Distributions
 using LinearAlgebra
 using SpecialFunctions
@@ -24,21 +24,32 @@ function prepare_data_sufficient_statistics(data::Matrix{Float64}, data_paramete
     return GaussianSufficientStatistics(data_means, posterior_means, posterior_covs)
 end
 
-function prepare_cluster_sufficient_statistics(::Type{T}, data::Matrix{Float64}) where {T <: NtlParameters}
+function prepare_data_sufficient_statistics(data::Matrix{Int64}, data_parameters::MultinomialParameters)
+    dim = size(data)[1]
     n = size(data)[2]
+    counts = zeros(Int64, dim, n)
+    counts[:, 1] = sum(data, dims=2)
+    posterior_dirichlet_scale = Matrix{Float64}(undef, dim, n)
+    for i = 1:n
+        posterior_dirichlet_scale[:, i] = vec(data_parameters.prior_dirichlet_scale)
+    end
+    return MultinomialSufficientStatistics(counts, posterior_dirichlet_scale)
+end
+
+function prepare_cluster_sufficient_statistics(::Type{T}, n::Int64) where {T <: NtlParameters}
     cluster_num_observations = Vector{Int64}(zeros(Int64, n))
     cluster_num_observations[1] = n
     cluster_sufficient_stats = NtlSufficientStatistics(cluster_num_observations, 1)
     return cluster_sufficient_stats
 end
 
-function fit(data::Matrix, data_parameters::DataParameters, cluster_parameters::ClusterParameters, 
-             num_instances::Int64; method::String="gibbs")
+function fit(data::Matrix{T}, data_parameters::DataParameters, cluster_parameters::ClusterParameters;
+             num_instances::Int64=100, method::String="gibbs") where {T <: Real}
     n = size(data)[2]
     dim = size(data)[1]
     instances = Array{Int64}(undef, n, num_instances)
     instances[:, 1] .= 1
-    cluster_sufficient_stats = prepare_cluster_sufficient_statistics(typeof(cluster_parameters), data)
+    cluster_sufficient_stats = prepare_cluster_sufficient_statistics(typeof(cluster_parameters), n)
     data_sufficient_stats = prepare_data_sufficient_statistics(data, data_parameters)
     compute_data_posterior_parameters!(1, cluster_sufficient_stats, data_sufficient_stats, data_parameters)
     if method === "gibbs"
@@ -51,11 +62,11 @@ function fit(data::Matrix, data_parameters::DataParameters, cluster_parameters::
     return instances
 end
 
-function gibbs_sample!(instances::Matrix{Int64}, data::Matrix{Float64}, 
+function gibbs_sample!(instances::Matrix{Int64}, data::Matrix{T}, 
                        cluster_sufficient_stats::ClusterSufficientStatistics,
                        data_sufficient_stats::DataSufficientStatistics, 
                        data_parameters::DataParameters,
-                       cluster_parameters::ClusterParameters)
+                       cluster_parameters::ClusterParameters) where {T <: Real}
     iterations = size(instances)[2]
     for iteration = 2:iterations
         println("Iteration: $iteration/$iterations")
@@ -99,6 +110,21 @@ function update_data_sufficient_statistics!(data_sufficient_stats::GaussianSuffi
     data_sufficient_stats.data_means[:, cluster] = cluster_mean
 end
 
+function update_data_sufficient_statistics!(data_sufficient_stats::MultinomialSufficientStatistics,
+                                            cluster::Int64, datum::Vector{Int64}, ::ClusterSufficientStatistics;
+                                            update_type::String="add")
+    cluster_counts = vec(data_sufficient_stats.total_counts[:, cluster])
+    if update_type === "add"
+        cluster_counts += datum 
+    elseif update_type === "remove"
+        cluster_counts -= datum
+    else
+        message = "$update_type is not a supported update type."
+        throw(ArgumentError(message))
+    end
+    data_sufficient_stats.total_counts[:, cluster] = cluster_counts
+end
+
 function update_cluster_stats_new_birth_time!(cluster_sufficient_stats::ClusterSufficientStatistics, 
                                               new_time::Int64, old_time::Int64)
     cluster_sufficient_stats.num_observations[new_time] = cluster_sufficient_stats.num_observations[old_time]
@@ -116,10 +142,19 @@ function update_data_stats_new_birth_time!(data_sufficient_stats::GaussianSuffic
     data_sufficient_stats.posterior_covs[:, old_time] = vec(data_parameters.prior_covariance)
 end
 
+function update_data_stats_new_birth_time!(data_sufficient_stats::MultinomialSufficientStatistics, 
+                                           new_time::Int64, old_time::Int64, 
+                                           data_parameters::MultinomialParameters)
+    data_sufficient_stats.total_counts[:, new_time] = data_sufficient_stats.total_counts[:, old_time]
+    data_sufficient_stats.total_counts[:, old_time] .= 0
+    data_sufficient_stats.posterior_dirichlet_scale[:, new_time] = data_sufficient_stats.posterior_dirichlet_scale[:, old_time]
+    data_sufficient_stats.posterior_dirichlet_scale[:, old_time] = data_parameters.prior_dirichlet_scale
+end
+
 function remove_observation!(observation::Int64, instances::Matrix{Int64}, iteration::Int64, 
-                             data::Matrix{Float64}, cluster_sufficient_stats::ClusterSufficientStatistics, 
+                             data::Matrix{T}, cluster_sufficient_stats::ClusterSufficientStatistics, 
                              data_sufficient_stats::DataSufficientStatistics,
-                             data_parameters::DataParameters)
+                             data_parameters::DataParameters) where {T <: Real}
     cluster = instances[observation, iteration]
     instances[observation, iteration] = size(instances)[1] + 1 
     datum = vec(data[:, observation])
@@ -141,9 +176,9 @@ function remove_observation!(observation::Int64, instances::Matrix{Int64}, itera
 end
 
 function add_observation!(observation::Int64, cluster::Int64, instances::Matrix{Int64}, iteration::Int64, 
-                          data::Matrix{Float64}, cluster_sufficient_stats::ClusterSufficientStatistics,
+                          data::Matrix{T}, cluster_sufficient_stats::ClusterSufficientStatistics,
                           data_sufficient_stats::DataSufficientStatistics, 
-                          data_parameters::DataParameters)
+                          data_parameters::DataParameters) where {T <: Real}
     if observation < cluster
         dim = size(data)[1]
         assigned_to_cluster = (instances[:, iteration] .=== cluster)
@@ -320,6 +355,14 @@ function compute_data_posterior_parameters!(cluster::Int64, ntl_sufficient_stats
     data_sufficient_stats.posterior_covs[:, cluster] = vec(cov)
 end
 
+function compute_data_posterior_parameters!(cluster::Int64, ::NtlSufficientStatistics,
+                                            data_sufficient_stats::MultinomialSufficientStatistics,
+                                            data_parameters::MultinomialParameters)
+    cluster_counts = data_sufficient_stats.total_counts[:, cluster]
+    prior_dirichlet_scale = data_parameters.prior_dirichlet_scale
+    data_sufficient_stats.posterior_dirichlet_scale[:, cluster] = cluster_counts + prior_dirichlet_scale 
+end
+
 function data_log_predictive(datum::Vector{Float64}, cluster::Int64, 
                              data_sufficient_stats::GaussianSufficientStatistics, 
                              data_parameters::GaussianParameters)
@@ -330,9 +373,18 @@ function data_log_predictive(datum::Vector{Float64}, cluster::Int64,
     return logpdf(posterior, datum)
 end
 
-function compute_data_log_predictives(observation::Int64, clusters::Vector{Int64}, data::Matrix{Float64}, 
+function data_log_predictive(datum::Vector{Int64}, cluster::Int64, 
+                             data_sufficient_stats::MultinomialSufficientStatistics,
+                             ::MultinomialParameters)
+    posterior_scale = vec(data_sufficient_stats.posterior_dirichlet_scale[:, cluster])
+    n = sum(datum)
+    posterior = DirichletMultinomial(n, posterior_scale)
+    return logpdf(posterior, datum)
+end
+
+function compute_data_log_predictives(observation::Int64, clusters::Vector{Int64}, data::Matrix{T}, 
                                       data_sufficient_stats::DataSufficientStatistics, 
-                                      data_parameters::DataParameters)
+                                      data_parameters::DataParameters) where {T <: Real}
     num_clusters = length(clusters)
     log_predictive = Array{Float64}(undef, num_clusters)
     datum = vec(data[:, observation])
@@ -350,10 +402,10 @@ function get_clusters(assignment::Vector{Int64})
     return unique(sort(assignment[assigned]))
 end
 
-function gibbs_move(observation::Int64, data::Matrix{Float64}, assignment::Vector{Int64},
+function gibbs_move(observation::Int64, data::Matrix{T}, assignment::Vector{Int64},
                     cluster_sufficient_stats::ClusterSufficientStatistics, 
                     data_sufficient_stats::DataSufficientStatistics,
-                    data_parameters::DataParameters, cluster_parameters::ClusterParameters)
+                    data_parameters::DataParameters, cluster_parameters::ClusterParameters) where {T <: Real}
     clusters = get_clusters(assignment)
     n = size(data)[2]
     num_clusters = length(clusters)

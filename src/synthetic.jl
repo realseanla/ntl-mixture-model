@@ -1,7 +1,7 @@
 module Generate
 
 using ..Models: ClusterParameters, DataParameters, GaussianParameters, GeometricArrivals, NtlParameters
-using ..Models: ArrivalDistribution
+using ..Models: ArrivalDistribution, MultinomialParameters
 using Distributions
 using LinearAlgebra
 using DataFrames
@@ -63,11 +63,24 @@ function sample_cluster_parameters(num_clusters, data_parameters::GaussianParame
     return rand(dist, num_clusters)
 end
 
+function sample_cluster_parameters(num_clusters, data_parameters::MultinomialParameters)
+    dist = Dirichlet(data_parameters.prior_dirichlet_scale)
+    return rand(dist, num_clusters)
+end
+
 function sample_data(cluster::Int64, num_assigned::Int64, cluster_means::Matrix{Float64}, 
                      data_parameters::GaussianParameters)
     cluster_mean = vec(cluster_means[:, cluster])
     normal_distribution = MvNormal(cluster_mean, data_parameters.data_covariance)
     cluster_data = rand(normal_distribution, num_assigned)
+    return cluster_data
+end
+
+function sample_data(cluster::Int64, num_assigned::Int64, cluster_probabilities::Matrix{Float64},
+                     data_parameters::MultinomialParameters)
+    cluster_probability = vec(cluster_probabilities[:, cluster])
+    multinomial_distribution = Multinomial(data_parameters.n, cluster_probability) 
+    cluster_data = rand(multinomial_distribution, num_assigned)
     return cluster_data
 end
 
@@ -79,12 +92,20 @@ function generate_arrival_times(n::Int64, arrival_distribution::GeometricArrival
     return arrivals
 end
 
+function prepare_data_matrix(::Type{T}, dim, n) where {T <: MultinomialParameters}
+    return Array{Int64}(undef, dim, n)
+end
+
+function prepare_data_matrix(::Type{T}, dim, n) where {T <: GaussianParameters}
+    return Array{Float64}(undef, dim, n)
+end
+
 function generate(n::Int64, data_parameters::DataParameters, cluster_prior_parameters::ClusterParameters)
-    dim = size(data_parameters.data_covariance)[1]
+    dim = data_parameters.dim
     arrivals = generate_arrival_times(n, cluster_prior_parameters.arrival_distribution)
     num_clusters = sum(arrivals)
     assignments = sample_clusters(arrivals, cluster_prior_parameters)
-    data = Array{Float64}(undef, dim, n)
+    data = prepare_data_matrix(typeof(data_parameters), dim, n)
 
     cluster_parameters = sample_cluster_parameters(num_clusters, data_parameters)
 

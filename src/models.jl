@@ -3,21 +3,22 @@ module Models
 export ModelParameters
 export ArrivalDistribution, GeometricArrivals
 export ClusterParameters, NtlParameters, DpParameters
-export DataParameters, GaussianParameters 
+export DataParameters, GaussianParameters, MultinomialParameters 
 export SufficientStatistics, ClusterSufficientStatistics, DataSufficientStatistics
-export NtlSufficientStatistics, GaussianSufficientStatistics
+export NtlSufficientStatistics, GaussianSufficientStatistics, MultinomialParameters
 
 abstract type ModelParameters end
 
 abstract type DataParameters <: ModelParameters end
 
 struct GaussianParameters <: DataParameters
-    data_covariance::Matrix
-    prior_mean::Vector
-    prior_covariance::Matrix
-    function GaussianParameters(data_covariance::Matrix,
-                                prior_mean::Vector,
-                                prior_covariance::Matrix)
+    dim::Int64
+    data_covariance::Matrix{Float64}
+    prior_mean::Vector{Float64}
+    prior_covariance::Matrix{Float64}
+    function GaussianParameters(data_covariance::Matrix{Float64},
+                                prior_mean::Vector{Float64},
+                                prior_covariance::Matrix{Float64})
         if size(data_covariance) !== size(prior_covariance)
             error("Dimension of data and prior covariance must match")
         end
@@ -25,7 +26,29 @@ struct GaussianParameters <: DataParameters
         if dim !== size(prior_covariance)[1] || dim !== size(prior_covariance)[2] 
             error("Dimension of mean prior must match each dimension of prior covariance")
         end
-        return new(data_covariance, prior_mean, prior_covariance)
+        return new(dim, data_covariance, prior_mean, prior_covariance)
+    end
+end
+
+struct MultinomialParameters <: DataParameters
+    n::Int64
+    dim::Int64
+    prior_dirichlet_scale::Vector
+    function MultinomialParameters(n::Int64, prior_dirichlet_scale::Vector)
+        dim = length(prior_dirichlet_scale)
+        if dim < 2
+            error("Dirichlet distribution must have dimension at least 2")
+        end
+        if any(prior_dirichlet_scale .<= 0)
+            error("Each value of Dirichlet scale parameter must be greater than 0")
+        end
+        if n <= 0
+            error("n must be greater than 0")
+        end
+        return new(n, dim, prior_dirichlet_scale)
+    end
+    function MultinomialParameters(prior_dirichlet_scale::Vector)
+        return MultinomialParameters(1, prior_dirichlet_scale)
     end
 end
 
@@ -73,6 +96,20 @@ struct GaussianSufficientStatistics <: DataSufficientStatistics
             error("Dimension of covariances must be square of dimension of means")
         end
         return new(data_means, posterior_means, posterior_covs)
+    end
+end
+
+struct MultinomialSufficientStatistics <: DataSufficientStatistics
+    total_counts::Matrix{Int64}
+    posterior_dirichlet_scale::Matrix{Float64}
+    function MultinomialSufficientStatistics(total_counts::Matrix{Int64}, posterior_dirichlet_scale::Matrix{Float64})
+        if any(total_counts .< 0)
+            error("Each count in vector must be at least 0")
+        end
+        if any(posterior_dirichlet_scale .<= 0)
+            error("Each value in dirichlet scale posterior must be greater than 0")
+        end
+        return new(total_counts, posterior_dirichlet_scale)
     end
 end
 
