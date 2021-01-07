@@ -74,7 +74,7 @@ abstract type SufficientStatistics end
 abstract type ClusterSufficientStatistics <: SufficientStatistics end
 
 mutable struct NtlSufficientStatistics <: ClusterSufficientStatistics
-    num_observations::Vector
+    num_observations::Vector{Int64}
     num_clusters::UInt64
 end
 

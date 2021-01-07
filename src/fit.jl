@@ -12,7 +12,6 @@ function prepare_data_sufficient_statistics(data::Matrix{Float64}, data_paramete
     dim = size(data)[1]
     n = size(data)[2]
     data_means = zeros(Float64, dim, n)
-    data_means[:, 1] = Statistics.mean(data, dims=2)
     posterior_means = Matrix{Float64}(undef, dim, n)
     for i = 1:n
         posterior_means[:, i] = data_parameters.prior_mean
@@ -28,7 +27,6 @@ function prepare_data_sufficient_statistics(data::Matrix{Int64}, data_parameters
     dim = size(data)[1]
     n = size(data)[2]
     counts = zeros(Int64, dim, n)
-    counts[:, 1] = sum(data, dims=2)
     posterior_dirichlet_scale = Matrix{Float64}(undef, dim, n)
     for i = 1:n
         posterior_dirichlet_scale[:, i] = vec(data_parameters.prior_dirichlet_scale)
@@ -38,7 +36,6 @@ end
 
 function prepare_cluster_sufficient_statistics(::Type{T}, n::Int64) where {T <: NtlParameters}
     cluster_num_observations = Vector{Int64}(zeros(Int64, n))
-    cluster_num_observations[1] = n
     cluster_sufficient_stats = NtlSufficientStatistics(cluster_num_observations, 1)
     return cluster_sufficient_stats
 end
@@ -48,13 +45,10 @@ function fit(data::Matrix{T}, data_parameters::DataParameters, cluster_parameter
     n = size(data)[2]
     dim = size(data)[1]
     instances = Array{Int64}(undef, n, num_instances)
-    instances[:, 1] .= 1
-    cluster_sufficient_stats = prepare_cluster_sufficient_statistics(typeof(cluster_parameters), n)
-    data_sufficient_stats = prepare_data_sufficient_statistics(data, data_parameters)
-    compute_data_posterior_parameters!(1, cluster_sufficient_stats, data_sufficient_stats, data_parameters)
     if method === "gibbs"
-        gibbs_sample!(instances, data, cluster_sufficient_stats, data_sufficient_stats, data_parameters, 
-                      cluster_parameters)
+        gibbs_sample!(instances, data, data_parameters, cluster_parameters)
+    elseif method === "smc" 
+        smc!(instances, data, data_parameters, cluster_parameters)
     else
         message = "$method is not an appropriate fit method."
         throw(ArgumentError(message))
@@ -62,11 +56,15 @@ function fit(data::Matrix{T}, data_parameters::DataParameters, cluster_parameter
     return instances
 end
 
-function gibbs_sample!(instances::Matrix{Int64}, data::Matrix{T}, 
-                       cluster_sufficient_stats::ClusterSufficientStatistics,
-                       data_sufficient_stats::DataSufficientStatistics, 
-                       data_parameters::DataParameters,
+function gibbs_sample!(instances::Matrix{Int64}, data::Matrix{T}, data_parameters::DataParameters,
                        cluster_parameters::ClusterParameters) where {T <: Real}
+    n = size(data)[2]
+    cluster_sufficient_stats = prepare_cluster_sufficient_statistics(typeof(cluster_parameters), n)
+    data_sufficient_stats = prepare_data_sufficient_statistics(data, data_parameters)
+    for observation = 1:n
+        add_observation!(observation, 1, instances, 1, data, cluster_sufficient_stats, data_sufficient_stats, 
+                         data_parameters)
+    end
     iterations = size(instances)[2]
     for iteration = 2:iterations
         println("Iteration: $iteration/$iterations")
@@ -74,11 +72,64 @@ function gibbs_sample!(instances::Matrix{Int64}, data::Matrix{T},
         for observation = 1:size(instances)[1]
             remove_observation!(observation, instances, iteration, data, cluster_sufficient_stats, 
                                 data_sufficient_stats, data_parameters)
-            assignment = vec(instances[:, iteration])
-            (cluster, weight) = gibbs_move(observation, data, assignment, cluster_sufficient_stats, 
-                                           data_sufficient_stats, data_parameters, cluster_parameters)
+            (cluster, weight) = gibbs_move(observation, data, cluster_sufficient_stats, data_sufficient_stats, 
+                                           data_parameters, cluster_parameters)
             add_observation!(observation, cluster, instances, iteration, data, cluster_sufficient_stats, 
                              data_sufficient_stats, data_parameters)
+        end
+    end
+end
+
+function compute_log_weight!(log_weights::Vector{Float64}, log_likelihoods::Vector{Float64}, proposal_weight::Float64, 
+                             assignment::Vector{Int64}, data::Matrix{T}, particle::Int64) where {T <: Real}
+    previous_log_weight = log_weights[particle]
+    previous_log_likelihood = log_likelihoods[particle]
+    log_likelihood = compute_joint_log_likelihood(assignment, data)
+    log_weights[particle] = previous_log_weight + log_likelihood - previous_log_likelihood - log(proposal_weight)
+    log_likelihoods[particle] = log_likelihood
+end
+
+function smc!(particles::Matrix{Int64}, data::Matrix{T}, data_parameters::DataParameters, 
+              cluster_parameters::ClusterParameters) where {T <: Real}
+    n = size(data)[2]
+    particles .= n+1
+    num_particles = size(particles)[2]
+    log_likelihoods = zeros(Float64, num_particles)
+    log_weights = Array{Float64}(undef, num_particles)
+
+    # Prepare sufficient statistics for each particle
+    data_sufficient_stats_array = Array{typeof(data_parameters)}(undef, num_particles)
+    cluster_sufficient_stats_array = Array{typeof(cluster_parameters)}(undef, num_particles)
+    for particle = 1:num_particles
+        data_sufficient_stats_array[particle] = prepare_data_sufficient_statistics(data, data_parameters)
+        cluster_sufficient_stats_array[particle] = prepare_cluster_sufficient_statistics(typeof(cluster_parameters), n)
+    end
+    # Assign first observation to first cluster
+    for particle = 1:num_particles
+        cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
+        data_sufficient_stats = data_sufficient_stats_array[particle]
+        add_observation!(1, 1, particles, particle, data, cluster_sufficient_stats, data_sufficient_stats,
+                         data_parameters)
+    end
+    for observation = 2:n
+        for particle = 1:num_particles
+            cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
+            data_sufficient_stats = data_sufficient_stats_array[particle]
+            (cluster, weight) = gibbs_move(observation, data, cluster_sufficient_stats, data_sufficient_stats, 
+                                           data_parameters, cluster_parameters)
+            add_observation!(observation, cluster, particles, particle, data, cluster_sufficient_stats, 
+                             data_sufficient_stats, data_parameters)
+            assignment = vec(particles[:, i])
+            compute_log_weight!(log_weights, log_likelihoods, proposal_weight, assignment, data, particle)
+        end
+        weights = exp.(log_weights)
+        normalized_weights ./= sum(weights)
+        ess = 1/sum(normalized_weights.^2)
+        if ess < num_particles/2
+            resampled_indices = rand(Categorical(normalized_weights), num_particles)
+            particles = particles[:, resampled_indices]
+            log_weights = log_weights[resampled_indices]
+            log_likelihoods = log_likelihoods[resampled_indices]
         end
     end
 end
@@ -217,11 +268,6 @@ function existing_cluster_log_predictive(cluster_sufficient_stats::NtlSufficient
     return log(n - num_clusters + phi_prior_a) - log(n - 1 + phi_prior_a + phi_prior_b)
 end
 
-function compute_num_observations(cluster::Int64, assignment::Vector{Int64})
-    assigned_to_cluster = assignment .=== cluster
-    return length(assignment[assigned_to_cluster])
-end
-
 function compute_num_complement(cluster::Int64, cluster_num_observations::Vector{Int64}, observation::Int64)
     younger_clusters = 1:(cluster-1)
     num_complement = sum(cluster_num_observations[younger_clusters]) - (cluster - 1)
@@ -323,10 +369,9 @@ function compute_cluster_log_predictives!(log_weights::Vector{Float64}, observat
     end
 end
 
-function compute_existing_cluster_log_predictives(observation::Int64, assignment::Vector{Int64}, 
+function compute_existing_cluster_log_predictives(observation::Int64, clusters::Vector{Int64}, 
                                                   cluster_sufficient_stats::ClusterSufficientStatistics, 
                                                   cluster_parameters::ClusterParameters)
-    clusters = get_clusters(assignment)
     num_clusters = length(clusters)
     log_weights = Array{Float64}(undef, length(clusters))
     compute_cluster_log_predictives!(log_weights, observation, clusters, cluster_sufficient_stats, cluster_parameters)
@@ -396,17 +441,15 @@ function compute_data_log_predictives(observation::Int64, clusters::Vector{Int64
     return log_predictive
 end
 
-function get_clusters(assignment::Vector{Int64})
+function get_clusters(num_observations::Vector{Int64})
     # We represent the observation not assigned to a cluster, if it exists, by n+1
-    assigned = assignment .<= length(assignment)
-    return unique(sort(assignment[assigned]))
+    return findall(>(0), num_observations)
 end
 
-function gibbs_move(observation::Int64, data::Matrix{T}, assignment::Vector{Int64},
-                    cluster_sufficient_stats::ClusterSufficientStatistics, 
-                    data_sufficient_stats::DataSufficientStatistics,
-                    data_parameters::DataParameters, cluster_parameters::ClusterParameters) where {T <: Real}
-    clusters = get_clusters(assignment)
+function gibbs_move(observation::Int64, data::Matrix{T}, cluster_sufficient_stats::ClusterSufficientStatistics, 
+                    data_sufficient_stats::DataSufficientStatistics, data_parameters::DataParameters, 
+                    cluster_parameters::ClusterParameters) where {T <: Real}
+    clusters = get_clusters(cluster_sufficient_stats.num_observations)
     n = size(data)[2]
     num_clusters = length(clusters)
 
@@ -415,7 +458,7 @@ function gibbs_move(observation::Int64, data::Matrix{T}, assignment::Vector{Int6
     choices[num_clusters+1] = observation
 
     weights = Array{Float64}(undef, num_clusters+1)
-    weights[1:num_clusters] = compute_existing_cluster_log_predictives(observation, assignment, 
+    weights[1:num_clusters] = compute_existing_cluster_log_predictives(observation, clusters, 
                                                                        cluster_sufficient_stats, cluster_parameters)
     weights[num_clusters+1] = new_cluster_log_predictive(cluster_sufficient_stats, cluster_parameters)
     weights += compute_data_log_predictives(observation, choices, data, data_sufficient_stats, data_parameters)
