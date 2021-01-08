@@ -4,22 +4,98 @@ using ..Models: ModelParameters, DataParameters, ClusterParameters, GaussianPara
 using ..Models: DataSufficientStatistics, ClusterSufficientStatistics, GaussianSufficientStatistics
 using ..Models: NtlSufficientStatistics, MultinomialParameters, MultinomialSufficientStatistics, GeometricArrivals
 using ..Models: DpSufficientStatistics
-using ..Samplers: GibbsSampler, SequentialMonteCarlo
+using ..Samplers: Sampler, GibbsSampler, SequentialMonteCarlo
+using ..Utils: logbeta, logmvbeta, log_multinomial_coeff
+
 using Distributions
 using LinearAlgebra
-using SpecialFunctions: loggamma, logfactorial
-import SpecialFunctions: logbeta
 using Statistics
 using ProgressBars
 
-logbeta(parameters::Vector{T}) where {T<:Real} = logbeta(parameters[1], parameters[2])
-
-function logmvbeta(parameters::Vector{T}) where {T <: Real}
-    return sum(loggamma.(parameters)) - loggamma(sum(parameters))
+function fit(sampler::GibbsSampler, data::Matrix{T}, data_parameters::DataParameters,
+             cluster_parameters::ClusterParameters) where {T <: Real}
+    iterations = sampler.num_iterations
+    n = size(data)[2]
+    dim = size(data)[1]
+    instances = Array{Int64}(undef, n, iterations)
+    n = size(data)[2]
+    cluster_sufficient_stats = prepare_cluster_sufficient_statistics(typeof(cluster_parameters), n)
+    data_sufficient_stats = prepare_data_sufficient_statistics(data, data_parameters)
+    # Assign all of the observations to the first cluster
+    for observation = 1:n
+        add_observation!(observation, 1, instances, 1, data, cluster_sufficient_stats, data_sufficient_stats, 
+                         data_parameters)
+    end
+    for iteration = ProgressBar(2:iterations)
+        instances[:, iteration] = instances[:, iteration-1]
+        for observation = 1:size(instances)[1]
+            remove_observation!(observation, instances, iteration, data, cluster_sufficient_stats, 
+                                data_sufficient_stats, data_parameters)
+            (cluster, weight) = gibbs_move(observation, data, cluster_sufficient_stats, data_sufficient_stats, 
+                                           data_parameters, cluster_parameters)
+            add_observation!(observation, cluster, instances, iteration, data, cluster_sufficient_stats, 
+                             data_sufficient_stats, data_parameters)
+        end
+    end
+    return instances
 end
 
-function log_multinomial_coeff(counts::Vector{Int64})
-    return logfactorial(sum(counts)) - sum(logfactorial.(counts)) 
+function fit(sampler::SequentialMonteCarlo, data::Matrix{T}, data_parameters::DataParameters, 
+             cluster_parameters::NtlParameters) where {T <: Real}
+    num_particles = sampler.num_particles
+    ess_threshold = sampler.ess_threshold
+    n = size(data)[2]
+    dim = size(data)[1]
+    particles = Array{Int64}(undef, n, num_particles)
+    particles .= n+1
+    num_particles = size(particles)[2]
+    log_likelihoods = zeros(Float64, num_particles)
+    log_weights = Array{Float64}(undef, num_particles)
+
+    # Prepare sufficient statistics for each particle
+    data_sufficient_stats_array = prepare_data_sufficient_statistics(num_particles, data, data_parameters)
+    cluster_sufficient_stats_array = prepare_cluster_sufficient_statistics(typeof(cluster_parameters), num_particles, n)
+    # Assign first observation to first cluster
+    for particle = 1:num_particles
+        cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
+        data_sufficient_stats = data_sufficient_stats_array[particle]
+        add_observation!(1, 1, particles, particle, data, cluster_sufficient_stats, data_sufficient_stats,
+                         data_parameters)
+        cluster_sufficient_stats_array[particle] = cluster_sufficient_stats
+        data_sufficient_stats_array[particle] = data_sufficient_stats
+    end
+    for observation = ProgressBar(2:n)
+        for particle = 1:num_particles
+            cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
+            data_sufficient_stats = data_sufficient_stats_array[particle]
+
+            (cluster, weight) = gibbs_move(observation, data, cluster_sufficient_stats, data_sufficient_stats, 
+                                           data_parameters, cluster_parameters)
+
+            add_observation!(observation, cluster, particles, particle, data, cluster_sufficient_stats, 
+                             data_sufficient_stats, data_parameters)
+
+            cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
+            data_sufficient_stats = data_sufficient_stats_array[particle]
+            compute_log_weight!(log_weights, log_likelihoods, weight, data_sufficient_stats, cluster_sufficient_stats, 
+                                data_parameters, cluster_parameters, particle)
+
+            cluster_sufficient_stats_array[particle] = cluster_sufficient_stats
+            data_sufficient_stats_array[particle] = data_sufficient_stats
+        end
+        weights = exp.(log_weights)
+        normalized_weights = weights./sum(weights)
+        ess = 1/sum(normalized_weights.^2)
+        if ess < ess_threshold
+            resampled_indices = rand(Categorical(normalized_weights), num_particles)
+            particles = particles[:, resampled_indices]
+            log_weights = log_weights[resampled_indices]
+            log_likelihoods = log_likelihoods[resampled_indices]
+            cluster_sufficient_stats_array = cluster_sufficient_stats_array[resampled_indices]
+            data_sufficient_stats_array = data_sufficient_stats_array[resampled_indices]
+        end
+    end
+    return particles
 end
 
 function prepare_data_sufficient_statistics(data::Matrix{Float64}, data_parameters::GaussianParameters)
@@ -86,46 +162,6 @@ function prepare_cluster_sufficient_statistics(cluster_model::Type{T}, num_parti
         sufficient_stats[particle] = prepare_cluster_sufficient_statistics(cluster_model, n)
     end
     return sufficient_stats
-end
-
-function fit(data::Matrix{T}, data_parameters::DataParameters, cluster_parameters::ClusterParameters;
-             num_instances::Int64=100, method::String="gibbs") where {T <: Real}
-    n = size(data)[2]
-    dim = size(data)[1]
-    instances = Array{Int64}(undef, n, num_instances)
-    if method === "gibbs"
-        gibbs_sample!(instances, data, data_parameters, cluster_parameters)
-    elseif method === "smc" 
-        smc!(instances, data, data_parameters, cluster_parameters)
-    else
-        message = "$method is not an appropriate fit method."
-        throw(ArgumentError(message))
-    end
-    return instances
-end
-
-function gibbs_sample!(instances::Matrix{Int64}, data::Matrix{T}, data_parameters::DataParameters,
-                       cluster_parameters::ClusterParameters) where {T <: Real}
-    n = size(data)[2]
-    cluster_sufficient_stats = prepare_cluster_sufficient_statistics(typeof(cluster_parameters), n)
-    data_sufficient_stats = prepare_data_sufficient_statistics(data, data_parameters)
-    # Assign all of the observations to the first cluster
-    for observation = 1:n
-        add_observation!(observation, 1, instances, 1, data, cluster_sufficient_stats, data_sufficient_stats, 
-                         data_parameters)
-    end
-    iterations = size(instances)[2]
-    for iteration = ProgressBar(2:iterations)
-        instances[:, iteration] = instances[:, iteration-1]
-        for observation = 1:size(instances)[1]
-            remove_observation!(observation, instances, iteration, data, cluster_sufficient_stats, 
-                                data_sufficient_stats, data_parameters)
-            (cluster, weight) = gibbs_move(observation, data, cluster_sufficient_stats, data_sufficient_stats, 
-                                           data_parameters, cluster_parameters)
-            add_observation!(observation, cluster, instances, iteration, data, cluster_sufficient_stats, 
-                             data_sufficient_stats, data_parameters)
-        end
-    end
 end
 
 function compute_cluster_data_log_likelihood(cluster::Int64, data_sufficient_stats::MultinomialSufficientStatistics,
@@ -218,59 +254,6 @@ function compute_log_weight!(log_weights::Vector{Float64}, log_likelihoods::Vect
                                                   cluster_parameters)
     log_weights[particle] = previous_log_weight + log_likelihood - previous_log_likelihood - proposal_log_weight
     log_likelihoods[particle] = log_likelihood
-end
-
-function smc!(particles::Matrix{Int64}, data::Matrix{T}, data_parameters::DataParameters, 
-              cluster_parameters::NtlParameters) where {T <: Real}
-    n = size(data)[2]
-    particles .= n+1
-    num_particles = size(particles)[2]
-    log_likelihoods = zeros(Float64, num_particles)
-    log_weights = Array{Float64}(undef, num_particles)
-
-    # Prepare sufficient statistics for each particle
-    data_sufficient_stats_array = prepare_data_sufficient_statistics(num_particles, data, data_parameters)
-    cluster_sufficient_stats_array = prepare_cluster_sufficient_statistics(typeof(cluster_parameters), num_particles, n)
-    # Assign first observation to first cluster
-    for particle = 1:num_particles
-        cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
-        data_sufficient_stats = data_sufficient_stats_array[particle]
-        add_observation!(1, 1, particles, particle, data, cluster_sufficient_stats, data_sufficient_stats,
-                         data_parameters)
-        cluster_sufficient_stats_array[particle] = cluster_sufficient_stats
-        data_sufficient_stats_array[particle] = data_sufficient_stats
-    end
-    for observation = ProgressBar(2:n)
-        for particle = 1:num_particles
-            cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
-            data_sufficient_stats = data_sufficient_stats_array[particle]
-
-            (cluster, weight) = gibbs_move(observation, data, cluster_sufficient_stats, data_sufficient_stats, 
-                                           data_parameters, cluster_parameters)
-
-            add_observation!(observation, cluster, particles, particle, data, cluster_sufficient_stats, 
-                             data_sufficient_stats, data_parameters)
-
-            cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
-            data_sufficient_stats = data_sufficient_stats_array[particle]
-            compute_log_weight!(log_weights, log_likelihoods, weight, data_sufficient_stats, cluster_sufficient_stats, 
-                                data_parameters, cluster_parameters, particle)
-
-            cluster_sufficient_stats_array[particle] = cluster_sufficient_stats
-            data_sufficient_stats_array[particle] = data_sufficient_stats
-        end
-        weights = exp.(log_weights)
-        normalized_weights = weights./sum(weights)
-        ess = 1/sum(normalized_weights.^2)
-        if ess < (1/2)num_particles
-            resampled_indices = rand(Categorical(normalized_weights), num_particles)
-            particles = particles[:, resampled_indices]
-            log_weights = log_weights[resampled_indices]
-            log_likelihoods = log_likelihoods[resampled_indices]
-            cluster_sufficient_stats_array = cluster_sufficient_stats_array[resampled_indices]
-            data_sufficient_stats_array = data_sufficient_stats_array[resampled_indices]
-        end
-    end
 end
 
 function gumbel_max(objects::Vector{Int64}, weights::Vector{Float64})

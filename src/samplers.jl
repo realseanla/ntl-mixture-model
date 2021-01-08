@@ -16,11 +16,14 @@ struct GibbsSampler <: Sampler
         end
         return new(num_iterations, burn_in)
     end
+    function GibbsSampler(num_iterations::Int64)
+        return new(num_iterations, 0)
+    end
 end
 
-struct SequentialMonteCarlo{T <: Real} <: Sampler
+struct SequentialMonteCarlo <: Sampler
     num_particles::Int64
-    ess_threshold::T
+    ess_threshold::Float64
     function SequentialMonteCarlo(num_particles::Int64, ess_threshold::T) where {T <: Real}
         if num_particles < 1
             error("Number of particles should be positive.")
@@ -28,7 +31,7 @@ struct SequentialMonteCarlo{T <: Real} <: Sampler
         if ess_threshold < 0
             error("ESS Threshold should be non-negative.")
         end
-        if typeof(ess_threshold) <: Float && ess_threshold > 1
+        if typeof(ess_threshold) <: AbstractFloat && ess_threshold > 1
             error("ESS Threshold should be either a non-negative integer or a fraction")
         end
         if ess_threshold < 1
