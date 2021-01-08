@@ -80,6 +80,11 @@ mutable struct NtlSufficientStatistics <: ClusterSufficientStatistics
     num_clusters::UInt64
 end
 
+mutable struct DpSufficientStatistics <: ClusterSufficientStatistics
+    num_observations::Vector{Int64}
+    num_clusters::UInt64
+end
+
 abstract type DataSufficientStatistics <: SufficientStatistics end
 
 struct GaussianSufficientStatistics <: DataSufficientStatistics

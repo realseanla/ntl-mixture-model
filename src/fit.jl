@@ -1,8 +1,10 @@
 module Fitter
 
-using ..Models: ModelParameters, DataParameters, ClusterParameters, GaussianParameters, NtlParameters
+using ..Models: ModelParameters, DataParameters, ClusterParameters, GaussianParameters, NtlParameters, DpParameters
 using ..Models: DataSufficientStatistics, ClusterSufficientStatistics, GaussianSufficientStatistics
 using ..Models: NtlSufficientStatistics, MultinomialParameters, MultinomialSufficientStatistics, GeometricArrivals
+using ..Models: DpSufficientStatistics
+using ..Samplers: GibbsSampler, SequentialMonteCarlo
 using Distributions
 using LinearAlgebra
 using SpecialFunctions: loggamma, logfactorial
@@ -68,6 +70,12 @@ end
 function prepare_cluster_sufficient_statistics(::Type{T}, n::Int64) where {T <: NtlParameters}
     cluster_num_observations = Vector{Int64}(zeros(Int64, n))
     cluster_sufficient_stats = NtlSufficientStatistics(cluster_num_observations, 1)
+    return cluster_sufficient_stats
+end
+
+function prepare_cluster_sufficient_statistics(::Type{T}, n::Int64) where {T <: DpParameters}
+    cluster_num_observations = Vector{Int64}(zeros(Int64, n))
+    cluster_sufficient_stats = DpSufficientStatistics(cluster_num_observations, 1)
     return cluster_sufficient_stats
 end
 
@@ -213,7 +221,7 @@ function compute_log_weight!(log_weights::Vector{Float64}, log_likelihoods::Vect
 end
 
 function smc!(particles::Matrix{Int64}, data::Matrix{T}, data_parameters::DataParameters, 
-              cluster_parameters::ClusterParameters) where {T <: Real}
+              cluster_parameters::NtlParameters) where {T <: Real}
     n = size(data)[2]
     particles .= n+1
     num_particles = size(particles)[2]
@@ -403,6 +411,10 @@ function new_cluster_log_predictive(cluster_sufficient_stats::NtlSufficientStati
     return log(phi_posterior[1]) - log(sum(phi_posterior))
 end
 
+function new_cluster_log_predictive(::DpSufficientStatistics, cluster_parameters::DpParameters)
+    return log(cluster_parameters.alpha)
+end
+
 function existing_cluster_log_predictive(cluster_sufficient_stats::NtlSufficientStatistics, 
                                          cluster_parameters::NtlParameters{T}) where {T <: GeometricArrivals}
     phi_posterior = compute_arrival_distribution_posterior(cluster_sufficient_stats, cluster_parameters)
@@ -514,8 +526,8 @@ function compute_cluster_log_predictives!(log_weights::Vector{Float64}, observat
 end
 
 function compute_existing_cluster_log_predictives(observation::Int64, clusters::Vector{Int64}, 
-                                                  cluster_sufficient_stats::ClusterSufficientStatistics, 
-                                                  cluster_parameters::ClusterParameters)
+                                                  cluster_sufficient_stats::NtlSufficientStatistics, 
+                                                  cluster_parameters::NtlParameters)
     num_clusters = length(clusters)
     log_weights = Array{Float64}(undef, length(clusters))
     compute_cluster_log_predictives!(log_weights, observation, clusters, cluster_sufficient_stats, cluster_parameters)
@@ -523,11 +535,18 @@ function compute_existing_cluster_log_predictives(observation::Int64, clusters::
     return log_weights
 end
 
-function compute_data_posterior_parameters!(cluster::Int64, ntl_sufficient_stats::NtlSufficientStatistics,
+function compute_existing_cluster_log_predictives(::Int64, clusters::Vector{Int64},
+                                                  cluster_sufficient_stats::DpSufficientStatistics,
+                                                  ::DpParameters)
+    log_weights = log.(cluster_sufficient_stats.num_observations[clusters])
+    return log_weights
+end
+
+function compute_data_posterior_parameters!(cluster::Int64, cluster_sufficient_stats::ClusterSufficientStatistics,
                                             data_sufficient_stats::GaussianSufficientStatistics,
                                             data_parameters::GaussianParameters)
     data_mean = vec(data_sufficient_stats.data_means[:, cluster])
-    n = ntl_sufficient_stats.num_observations[cluster]
+    n = cluster_sufficient_stats.num_observations[cluster]
     dim = length(data_mean)
     prior_mean = data_parameters.prior_mean
     prior_cov = data_parameters.prior_covariance
@@ -544,7 +563,7 @@ function compute_data_posterior_parameters!(cluster::Int64, ntl_sufficient_stats
     data_sufficient_stats.posterior_covs[:, cluster] = vec(cov)
 end
 
-function compute_data_posterior_parameters!(cluster::Int64, ::NtlSufficientStatistics,
+function compute_data_posterior_parameters!(cluster::Int64, ::ClusterSufficientStatistics,
                                             data_sufficient_stats::MultinomialSufficientStatistics,
                                             data_parameters::MultinomialParameters)
     cluster_counts = data_sufficient_stats.total_counts[:, cluster]
