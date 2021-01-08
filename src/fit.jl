@@ -36,6 +36,15 @@ function prepare_data_sufficient_statistics(data::Matrix{Float64}, data_paramete
     return GaussianSufficientStatistics(data_means, data_precision_quadratic_sums, posterior_means, posterior_covs)
 end
 
+function prepare_data_sufficient_statistics(num_particles::Int64, data::Matrix{Float64}, 
+                                            data_parameters::GaussianParameters)
+    sufficient_stats = Array{GaussianSufficientStatistics}(undef, num_particles)
+    for particle = 1:num_particles
+        sufficient_stats[particle] = prepare_data_sufficient_statistics(data, data_parameters)
+    end
+    return sufficient_stats
+end
+
 function prepare_data_sufficient_statistics(data::Matrix{Int64}, data_parameters::MultinomialParameters)
     dim = size(data)[1]
     n = size(data)[2]
@@ -47,10 +56,28 @@ function prepare_data_sufficient_statistics(data::Matrix{Int64}, data_parameters
     return MultinomialSufficientStatistics(counts, posterior_dirichlet_scale)
 end
 
+function prepare_data_sufficient_statistics(num_particles::Int64, data::Matrix{Int64}, 
+                                            data_parameters::MultinomialParameters)
+    sufficient_stats = Array{MultinomialSufficientStatistics}(undef, num_particles)
+    for particle = 1:num_particles
+        sufficient_stats[particle] = prepare_data_sufficient_statistics(data, data_parameters)
+    end
+    return sufficient_stats
+end
+
 function prepare_cluster_sufficient_statistics(::Type{T}, n::Int64) where {T <: NtlParameters}
     cluster_num_observations = Vector{Int64}(zeros(Int64, n))
     cluster_sufficient_stats = NtlSufficientStatistics(cluster_num_observations, 1)
     return cluster_sufficient_stats
+end
+
+function prepare_cluster_sufficient_statistics(cluster_model::Type{T}, num_particles::Int64, 
+                                               n::Int64) where {T<:NtlParameters} 
+    sufficient_stats = Array{NtlSufficientStatistics}(undef, num_particles)
+    for particle = 1:num_particles
+        sufficient_stats[particle] = prepare_cluster_sufficient_statistics(cluster_model, n)
+    end
+    return sufficient_stats
 end
 
 function fit(data::Matrix{T}, data_parameters::DataParameters, cluster_parameters::ClusterParameters;
@@ -174,8 +201,7 @@ function compute_joint_log_likelihood(data_sufficient_stats::DataSufficientStati
 end
 
 function compute_log_weight!(log_weights::Vector{Float64}, log_likelihoods::Vector{Float64}, 
-                             proposal_log_weight::Float64, 
-                             data_sufficient_stats::DataSufficientStatistics, 
+                             proposal_log_weight::Float64, data_sufficient_stats::DataSufficientStatistics, 
                              cluster_sufficient_stats::ClusterSufficientStatistics,
                              data_parameters::DataParameters, cluster_parameters::ClusterParameters, particle::Int64)
     previous_log_weight = log_weights[particle]
@@ -184,14 +210,6 @@ function compute_log_weight!(log_weights::Vector{Float64}, log_likelihoods::Vect
                                                   cluster_parameters)
     log_weights[particle] = previous_log_weight + log_likelihood - previous_log_likelihood - proposal_log_weight
     log_likelihoods[particle] = log_likelihood
-end
-
-function make_data_sufficient_stats_array(::Type{T}, num_particles::Int64) where {T<:GaussianParameters} 
-    return Array{GaussianSufficientStatistics}(undef, num_particles)
-end
-
-function make_cluster_sufficient_stats_array(::Type{T}, num_particles::Int64) where {T<:NtlParameters} 
-    return Array{NtlSufficientStatistics}(undef, num_particles)
 end
 
 function smc!(particles::Matrix{Int64}, data::Matrix{T}, data_parameters::DataParameters, 
@@ -203,38 +221,46 @@ function smc!(particles::Matrix{Int64}, data::Matrix{T}, data_parameters::DataPa
     log_weights = Array{Float64}(undef, num_particles)
 
     # Prepare sufficient statistics for each particle
-    data_sufficient_stats_array = make_data_sufficient_stats_array(typeof(data_parameters), num_particles)
-    cluster_sufficient_stats_array = make_cluster_sufficient_stats_array(typeof(cluster_parameters), num_particles)
-    for particle = 1:num_particles
-        data_sufficient_stats_array[particle] = prepare_data_sufficient_statistics(data, data_parameters)
-        cluster_sufficient_stats_array[particle] = prepare_cluster_sufficient_statistics(typeof(cluster_parameters), n)
-    end
+    data_sufficient_stats_array = prepare_data_sufficient_statistics(num_particles, data, data_parameters)
+    cluster_sufficient_stats_array = prepare_cluster_sufficient_statistics(typeof(cluster_parameters), num_particles, n)
     # Assign first observation to first cluster
     for particle = 1:num_particles
         cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
         data_sufficient_stats = data_sufficient_stats_array[particle]
         add_observation!(1, 1, particles, particle, data, cluster_sufficient_stats, data_sufficient_stats,
                          data_parameters)
+        cluster_sufficient_stats_array[particle] = cluster_sufficient_stats
+        data_sufficient_stats_array[particle] = data_sufficient_stats
     end
     for observation = ProgressBar(2:n)
         for particle = 1:num_particles
             cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
             data_sufficient_stats = data_sufficient_stats_array[particle]
+
             (cluster, weight) = gibbs_move(observation, data, cluster_sufficient_stats, data_sufficient_stats, 
                                            data_parameters, cluster_parameters)
+
             add_observation!(observation, cluster, particles, particle, data, cluster_sufficient_stats, 
                              data_sufficient_stats, data_parameters)
+
+            cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
+            data_sufficient_stats = data_sufficient_stats_array[particle]
             compute_log_weight!(log_weights, log_likelihoods, weight, data_sufficient_stats, cluster_sufficient_stats, 
                                 data_parameters, cluster_parameters, particle)
+
+            cluster_sufficient_stats_array[particle] = cluster_sufficient_stats
+            data_sufficient_stats_array[particle] = data_sufficient_stats
         end
         weights = exp.(log_weights)
         normalized_weights = weights./sum(weights)
         ess = 1/sum(normalized_weights.^2)
-        if ess < num_particles/2
+        if ess < (1/2)num_particles
             resampled_indices = rand(Categorical(normalized_weights), num_particles)
             particles = particles[:, resampled_indices]
             log_weights = log_weights[resampled_indices]
             log_likelihoods = log_likelihoods[resampled_indices]
+            cluster_sufficient_stats_array = cluster_sufficient_stats_array[resampled_indices]
+            data_sufficient_stats_array = data_sufficient_stats_array[resampled_indices]
         end
     end
 end
