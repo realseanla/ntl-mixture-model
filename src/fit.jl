@@ -75,8 +75,6 @@ function fit(sampler::SequentialMonteCarlo, data::Matrix{T}, data_parameters::Da
             add_observation!(observation, cluster, particles, particle, data, cluster_sufficient_stats, 
                              data_sufficient_stats, data_parameters)
 
-            cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
-            data_sufficient_stats = data_sufficient_stats_array[particle]
             compute_log_weight!(log_weights, log_likelihoods, weight, data_sufficient_stats, cluster_sufficient_stats, 
                                 data_parameters, cluster_parameters, particle)
 
@@ -171,6 +169,7 @@ function compute_cluster_data_log_likelihood(cluster::Int64, data_sufficient_sta
     dirichlet_prior = data_parameters.prior_dirichlet_scale
     counts = convert(Vector{Int64}, dirichlet_posterior - dirichlet_prior)
     log_likelihood = log_multinomial_coeff(counts) + logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
+    return log_likelihood
 end
 
 function compute_cluster_data_log_likelihood(cluster::Int64, data_sufficient_stats::GaussianSufficientStatistics, 
@@ -231,6 +230,7 @@ function compute_assignment_log_likelihood(cluster_sufficient_stats::ClusterSuff
                                                                     cluster_parameters)
     end
     log_likelihood += compute_arrivals_log_likelihood(cluster_sufficient_stats, cluster_parameters)
+    return log_likelihood
 end
 
 function compute_joint_log_likelihood(data_sufficient_stats::DataSufficientStatistics, 

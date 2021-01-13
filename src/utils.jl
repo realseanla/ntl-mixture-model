@@ -2,6 +2,7 @@ module Utils
 
 using SpecialFunctions
 import SpecialFunctions: logbeta 
+using ProgressBars
 
 function one_hot_encode(assignments::Vector{Int64})
     n = length(assignments)
@@ -18,7 +19,7 @@ function compute_co_occurrence_matrix(markov_chain::Matrix{Int64})
     n = size(markov_chain)[1]
     co_occurrence_matrix = zeros(Int64, n, n)
     num_instances = size(markov_chain)[2]
-    for i = 1:num_instances
+    for i = ProgressBar(1:num_instances)
         assignment = markov_chain[:, i]
         ohe_assignment = one_hot_encode(assignment)
         co_occurrence_matrix += transpose(ohe_assignment) * ohe_assignment
