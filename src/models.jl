@@ -76,15 +76,13 @@ abstract type ClusterSufficientStatistics <: SufficientStatistics end
 
 abstract type MixtureSufficientStatistics <: ClusterSufficientStatistics end
 
-mutable struct NtlSufficientStatistics <: MixtureSufficientStatistics
+struct NtlSufficientStatistics <: MixtureSufficientStatistics
     num_observations::Vector{Int64}
-    num_clusters::UInt64
     clusters::BitArray
 end
 
-mutable struct DpSufficientStatistics <: MixtureSufficientStatistics
+struct DpSufficientStatistics <: MixtureSufficientStatistics
     num_observations::Vector{Int64}
-    num_clusters::UInt64
     clusters::BitArray
 end
 
@@ -92,7 +90,7 @@ abstract type HmmSufficientStatistics <: ClusterSufficientStatistics end
 
 mutable struct NtlHmmSufficientStatistics <: HmmSufficientStatistics 
     num_observations::Matrix{Int64}
-    num_clusters::UInt64
+    num_clusters::Int64
     clusters::BitArray
 end
 

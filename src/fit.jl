@@ -13,6 +13,13 @@ using LinearAlgebra
 using Statistics
 using ProgressBars
 
+asserting() = true # when set to true, this will enable all `@assertion`s
+
+macro assertion(test)
+  esc(:(if $(@__MODULE__).asserting()
+    @assert($test)
+   end))
+end
 
 function fit(data::Matrix{T}, model::Mixture, sampler::GibbsSampler) where {T <: Real}
     cluster_parameters = model.cluster_parameters
@@ -37,12 +44,15 @@ function fit(data::Matrix{T}, model::Mixture, sampler::GibbsSampler) where {T <:
             (cluster, weight) = gibbs_move(observation, data, cluster_sufficient_stats, data_sufficient_stats, model)
             add_observation!(observation, cluster, instances, iteration, data, cluster_sufficient_stats, 
                              data_sufficient_stats, data_parameters)
+
+            @assertion all(cluster_sufficient_stats.num_observations[cluster_sufficient_stats.clusters] .> 0)
+            @assertion sum(cluster_sufficient_stats.num_observations) === n
         end
     end
     return instances
 end
 
-function fit(data::Matrix{T}, model::Model, sampler::SequentialMonteCarlo) where {T <: Real}
+function fit(data::Matrix{T}, model::Mixture, sampler::SequentialMonteCarlo) where {T <: Real}
     num_particles = sampler.num_particles
     ess_threshold = sampler.ess_threshold
     n = size(data)[2]
@@ -55,7 +65,7 @@ function fit(data::Matrix{T}, model::Model, sampler::SequentialMonteCarlo) where
 
     cluster_sufficient_stats_array = prepare_cluster_sufficient_statistics(model, num_particles, n)
     # Prepare sufficient statistics for each particle
-    data_sufficient_stats_array = prepare_data_sufficient_statistics(num_particles, data, data_parameters)
+    data_sufficient_stats_array = prepare_data_sufficient_statistics(num_particles, data, model.data_parameters)
 
     # Assign first observation to first cluster
     for particle = 1:num_particles
@@ -89,7 +99,7 @@ function fit(data::Matrix{T}, model::Model, sampler::SequentialMonteCarlo) where
         weights = exp.(log_weights)
         normalized_weights = weights./sum(weights)
         ess = 1/sum(normalized_weights.^2)
-        if ess < ess_threshold || observation === n
+        if ess < ess_threshold 
             resampled_indices = rand(Categorical(normalized_weights), num_particles)
             particles = particles[:, resampled_indices]
             log_weights .= 1/num_particles
@@ -148,32 +158,29 @@ end
 
 function prepare_cluster_sufficient_statistics(::Mixture{T}, n::Int64) where {T <: NtlParameters}
     cluster_num_observations = Vector{Int64}(zeros(Int64, n))
-    num_clusters = 0
     clusters = BitArray(undef, n)
     clusters .= false
-    cluster_sufficient_stats = NtlSufficientStatistics(cluster_num_observations, num_clusters, clusters)
+    cluster_sufficient_stats = NtlSufficientStatistics(cluster_num_observations, clusters)
     return cluster_sufficient_stats
 end
 
 function prepare_cluster_sufficient_statistics(::Mixture{T}, n::Int64) where {T <: DpParameters}
     cluster_num_observations = Vector{Int64}(zeros(Int64, n))
-    num_clusters = 0
     clusters = BitArray(undef, n)
     clusters .= false
-    cluster_sufficient_stats = DpSufficientStatistics(cluster_num_observations, num_clusters, clusters)
+    cluster_sufficient_stats = DpSufficientStatistics(cluster_num_observations, clusters)
     return cluster_sufficient_stats
 end
 
 function prepare_cluster_sufficient_statistics(::HiddenMarkovModel{T}, n::Int64) where {T <: NtlParameters}
     cluster_num_observations = zeros(Int64, n+1, n+1) # (source state) -> (target state)
-    num_clusters = 0
     clusters = BitArray(undef, n)
     clusters .= false
-    cluster_sufficient_stats = NtlHmmSufficientStatistics(cluster_num_observations, num_clusters, clusters)
+    cluster_sufficient_stats = NtlHmmSufficientStatistics(cluster_num_observations, clusters)
 end
 
 function prepare_cluster_sufficient_statistics(model::Mixture{T}, num_states::Int64, n::Int64) where {T<:NtlParameters}
-    sufficient_stats = Array{NtlSufficientStatistics}(undef, num_particles)
+    sufficient_stats = Array{NtlSufficientStatistics}(undef, num_states)
     for state = 1:num_states
         sufficient_stats[state] = prepare_cluster_sufficient_statistics(model, n)
     end
@@ -189,15 +196,13 @@ function prepare_cluster_sufficient_statistics(model::HiddenMarkovModel{T}, num_
     return sufficient_stats
 end
 
-function prepare_cluster_sufficient_statistics(::NtlParameters, num_observations::Vector{Int64}, num_clusters::Int64, 
-                                               clusters::BitArray)
-    cluster_sufficient_stats = NtlSufficientStatistics(num_observations, num_clusters, clusters)
+function prepare_cluster_sufficient_statistics(::NtlParameters, num_observations::Vector{Int64}, clusters::BitArray)
+    cluster_sufficient_stats = NtlSufficientStatistics(num_observations, clusters)
     return cluster_sufficient_stats
 end
 
-function prepare_cluster_sufficient_statistics(::DpParameters, num_observations::Vector{Int64}, num_clusters::Int64, 
-                                               clusters::BitArray)
-    cluster_sufficient_stats = DpSufficientStatistics(num_observations, num_clusters, clusters)
+function prepare_cluster_sufficient_statistics(::DpParameters, num_observations::Vector{Int64}, clusters::BitArray)
+    cluster_sufficient_stats = DpSufficientStatistics(num_observations, clusters)
     return cluster_sufficient_stats
 end
 
@@ -339,13 +344,11 @@ function update_cluster_sufficient_statistics!(cluster_sufficient_stats::Mixture
     if update_type === "add"
         cluster_sufficient_stats.num_observations[cluster] += 1
         if cluster_sufficient_stats.num_observations[cluster] === 1
-            cluster_sufficient_stats.num_clusters += 1
             cluster_sufficient_stats.clusters[cluster] = true
         end
     elseif update_type === "remove"
         cluster_sufficient_stats.num_observations[cluster] -= 1
         if cluster_sufficient_stats.num_observations[cluster] === 0
-            cluster_sufficient_stats.num_clusters -= 1
             cluster_sufficient_stats.clusters[cluster] = false
         end
     else
@@ -359,13 +362,11 @@ function update_cluster_sufficient_statistics!(cluster_sufficient_stats::HmmSuff
     if update_type === "add"
         cluster_sufficient_stats.num_observations[prev_cluster, cluster] += 1
         if sum(cluster_sufficient_stats.num_observations[:, cluster]) === 1
-            cluster_sufficient_stats.num_clusters += 1
             cluster_sufficient_stats.clusters[cluster] = true
         end
     elseif update_type === "remove"
         cluster_sufficient_stats.num_observations[prev_cluster, cluster] -= 1
         if sum(cluster_sufficient_stats.num_observations[:, cluster]) === 0
-            cluster_sufficient_stats.num_clusters -= 1
             cluster_sufficient_stats.clusters[cluster] = false
         end
     else
@@ -381,9 +382,9 @@ end
 
 function update_cluster_stats_new_birth_time!(cluster_sufficient_stats::MixtureSufficientStatistics,
                                               new_time::Int64, old_time::Int64)
-    num_observations = cluster_sufficient_stats.num_observations
-    update_cluster_stats_new_birth_time!(num_observations, new_time, old_time)
-    cluster_sufficient_stats.num_observations = num_observations
+    update_cluster_stats_new_birth_time!(cluster_sufficient_stats.num_observations, new_time, old_time)
+    cluster_sufficient_stats.clusters[new_time] = true
+    cluster_sufficient_stats.clusters[old_time] = false
 end
 
 function update_cluster_stats_new_birth_time!(cluster_sufficient_stats::HmmSufficientStatistics,
@@ -394,6 +395,8 @@ function update_cluster_stats_new_birth_time!(cluster_sufficient_stats::HmmSuffi
         update_cluster_stats_new_birth_time!(num_observations, new_time, old_time)
         cluster_sufficient_stats_array.num_observations[:, cluster] = num_observations
     end
+    cluster_sufficient_stats.clusters[new_time] = true
+    cluster_sufficient_stats.clusters[old_time] = false
 end
 
 function update_data_stats_new_birth_time!(data_sufficient_stats::GaussianSufficientStatistics, 
@@ -432,8 +435,12 @@ function remove_observation!(observation::Int64, instances::Matrix{Int64}, itera
                              cluster_sufficient_stats::MixtureSufficientStatistics,
                              data_sufficient_stats::DataSufficientStatistics,
                              data_parameters::DataParameters) where {T <: Real}
+
     n = size(instances)[1]
     cluster = instances[observation, iteration]
+
+    num_observations_before = cluster_sufficient_stats.num_observations[cluster]
+
     instances[observation, iteration] = n+1 
     datum = vec(data[:, observation])
     update_cluster_sufficient_statistics!(cluster_sufficient_stats, cluster, update_type="remove")
@@ -441,9 +448,12 @@ function remove_observation!(observation::Int64, instances::Matrix{Int64}, itera
                                        update_type="remove")
     compute_data_posterior_parameters!(cluster, cluster_sufficient_stats, data_sufficient_stats, data_parameters)
     if (cluster === observation) && (cluster_sufficient_stats.num_observations[cluster] > 0)
-        update_cluster_birth_time_remove!(cluster, iteration, instances, cluster_sufficient_stats, 
-                                          data_sufficient_stats, data_parameters)
+        cluster = update_cluster_birth_time_remove!(cluster, iteration, instances, cluster_sufficient_stats, 
+                                                    data_sufficient_stats, data_parameters)
     end
+
+    num_observations_after = cluster_sufficient_stats.num_observations[cluster]
+    @assertion num_observations_before === (num_observations_after + 1)
 end
 
 function remove_observation!(observation::Int64, instances::Matrix{Int64}, iteration::Int64, data::Matrix{T}, 
@@ -500,6 +510,8 @@ function add_observation!(observation::Int64, cluster::Int64, instances::Matrix{
                           data::Matrix{T}, cluster_sufficient_stats::MixtureSufficientStatistics,
                           data_sufficient_stats::DataSufficientStatistics, 
                           data_parameters::DataParameters) where {T <: Real}
+    num_observations_before = cluster_sufficient_stats.num_observations[cluster]
+
     if observation < cluster
         cluster = update_cluster_birth_time_add!(cluster, observation, iteration, instances, cluster_sufficient_stats,
                                                  data_sufficient_stats, data_parameters)
@@ -511,6 +523,9 @@ function add_observation!(observation::Int64, cluster::Int64, instances::Matrix{
     update_data_sufficient_statistics!(data_sufficient_stats, cluster, datum, cluster_sufficient_stats, data_parameters, 
                                        update_type="add")
     compute_data_posterior_parameters!(cluster, cluster_sufficient_stats, data_sufficient_stats, data_parameters)
+
+    num_observations_after = cluster_sufficient_stats.num_observations[cluster]
+    @assertion num_observations_before === (num_observations_after - 1)
 end
 
 function add_observation!(observation::Int64, cluster::Int64, instances::Matrix{Int64}, iteration::Int64, 
@@ -543,18 +558,14 @@ function add_observation!(observation::Int64, cluster::Int64, instances::Matrix{
     end
 end
 
-function compute_arrival_distribution_posterior(cluster_parameters::NtlParameters{T}, n, num_clusters) where {T <: GeometricArrivals}
-    phi_posterior = cluster_parameters.arrival_distribution.prior
-    phi_posterior[1] += num_clusters - 1
-    phi_posterior[2] += n - num_clusters 
-    return phi_posterior
-end
-
 function compute_arrival_distribution_posterior(cluster_sufficient_stats::NtlSufficientStatistics,
                                                 cluster_parameters::NtlParameters{T}) where {T <: GeometricArrivals}
     n = length(cluster_sufficient_stats.clusters)
-    num_clusters = cluster_sufficient_stats.num_clusters
-    return compute_arrival_distribution_posterior(cluster_parameters, n, num_clusters)
+    num_clusters = length(get_clusters(cluster_sufficient_stats))
+    phi_posterior = deepcopy(cluster_parameters.arrival_distribution.prior)
+    phi_posterior[1] += num_clusters - 1
+    phi_posterior[2] += n - num_clusters 
+    return phi_posterior
 end
 
 function new_cluster_log_predictive(cluster_sufficient_stats::NtlSufficientStatistics,
@@ -615,8 +626,7 @@ function compute_cluster_log_predictives(observation::Int64, clusters::Vector{In
             cluster_psi = compute_stick_breaking_posterior(cluster, ntl_sufficient_stats, ntl_parameters, 
                                                            observation=observation)
             psi_parameters[:, cluster] = cluster_psi
-            denom = cluster_psi[1] + cluster_psi[2]
-            log_denom = log(denom)
+            log_denom = log(sum(cluster_psi))
             cluster_log_weights[cluster] = log(cluster_psi[1]) - log_denom
             complement_log_weights[cluster] = log(cluster_psi[2]) - log_denom
             if observation < cluster
@@ -788,10 +798,9 @@ function propose(observation::Int64, prev_cluster::Int64, data::Matrix{T},
                  model::Model) where {T <: Real}
     n = length(data)[1]
     num_observations = cluster_sufficient_stats.num_observations[prev_cluster, :]
-    num_clusters = cluster_sufficient_stats.num_clusters
-    clusters = cluster_sufficient_stats.clusters
+    clusters = get_clusters(cluster_sufficient_stats)
     state_cluster_sufficient_stats = prepare_cluster_sufficient_statistics(model.cluster_parameters, num_observations, 
-                                                                           num_clusters, clusters)
+                                                                           clusters)
     return gibbs_move(observation, data, state_cluster_sufficient_stats, data_sufficient_stats, model)
 end
 
