@@ -382,7 +382,7 @@ function compute_arrival_distribution_posterior(cluster_sufficient_stats::NtlSuf
                                                 cluster_parameters::NtlParameters{T}) where {T <: GeometricArrivals}
     n = length(cluster_sufficient_stats.num_observations)
     num_clusters = cluster_sufficient_stats.num_clusters
-    phi_posterior = cluster_parameters.arrival_distribution.prior
+    phi_posterior = deepcopy(cluster_parameters.arrival_distribution.prior)
     phi_posterior[1] += num_clusters - 1
     phi_posterior[2] += n - num_clusters 
     return phi_posterior
