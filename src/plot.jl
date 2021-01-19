@@ -18,7 +18,7 @@ function plot_co_occurrence_matrix(markov_chain::Matrix{Int64})
     gr()
     heatmap(1:size(co_occurrence_matrix,1),
         1:size(co_occurrence_matrix,2), co_occurrence_matrix,
-        c=cgrad([:black, :white]),
+        c=cgrad([:white, :blue]),
         xlabel="Observations", ylabel="Observations",
         title="Co-occurrence Matrix")
 end
