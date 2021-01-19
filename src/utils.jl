@@ -1,5 +1,6 @@
 module Utils
 
+using Distributions
 using SpecialFunctions
 import SpecialFunctions: logbeta 
 using ProgressBars
@@ -39,5 +40,12 @@ end
 function log_multinomial_coeff(counts::Vector{Int64})
     return logfactorial(sum(counts)) - sum(logfactorial.(counts)) 
 end
+
+function gumbel_max(objects::Vector{Int64}, weights::Vector{Float64})
+    gumbel_values = rand(Gumbel(0, 1), length(weights))
+    index = argmax(gumbel_values + weights)
+    return (objects[index], weights[index])
+end
+
 
 end

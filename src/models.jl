@@ -1,15 +1,14 @@
 module Models
 
-export ModelParameters
+export Model, Mixture, HiddenMarkovModel
 export ArrivalDistribution, GeometricArrivals
-export ClusterParameters, NtlParameters, DpParameters
+export MixtureParameters, NtlParameters, DpParameters
 export DataParameters, GaussianParameters, MultinomialParameters 
 export SufficientStatistics, ClusterSufficientStatistics, DataSufficientStatistics
 export NtlSufficientStatistics, GaussianSufficientStatistics, MultinomialParameters
+export HmmSufficientStatistics, NtlHmmSufficientStatistics, MixtureSufficientStatistics
 
-abstract type ModelParameters end
-
-abstract type DataParameters <: ModelParameters end
+abstract type DataParameters end
 
 struct GaussianParameters <: DataParameters
     dim::Int64
@@ -54,13 +53,13 @@ struct MultinomialParameters <: DataParameters
     end
 end
 
-abstract type ArrivalDistribution <: ModelParameters end
+abstract type ArrivalDistribution end
 
 struct GeometricArrivals <: ArrivalDistribution
     prior::Vector{Float64}
 end
 
-abstract type ClusterParameters <: ModelParameters end
+abstract type ClusterParameters end
 
 struct NtlParameters{T<:ArrivalDistribution} <: ClusterParameters
     prior::Vector{Float64}
@@ -75,14 +74,24 @@ abstract type SufficientStatistics end
 
 abstract type ClusterSufficientStatistics <: SufficientStatistics end
 
-mutable struct NtlSufficientStatistics <: ClusterSufficientStatistics
+abstract type MixtureSufficientStatistics <: ClusterSufficientStatistics end
+
+struct NtlSufficientStatistics <: MixtureSufficientStatistics
     num_observations::Vector{Int64}
-    num_clusters::UInt64
+    clusters::BitArray
 end
 
-mutable struct DpSufficientStatistics <: ClusterSufficientStatistics
+struct DpSufficientStatistics <: MixtureSufficientStatistics
     num_observations::Vector{Int64}
-    num_clusters::UInt64
+    clusters::BitArray
+end
+
+abstract type HmmSufficientStatistics <: ClusterSufficientStatistics end
+
+mutable struct NtlHmmSufficientStatistics <: HmmSufficientStatistics 
+    num_observations::Matrix{Int64}
+    num_clusters::Int64
+    clusters::BitArray
 end
 
 abstract type DataSufficientStatistics <: SufficientStatistics end
@@ -120,6 +129,18 @@ struct MultinomialSufficientStatistics <: DataSufficientStatistics
         end
         return new(total_counts, posterior_dirichlet_scale)
     end
+end
+
+abstract type Model end
+
+struct Mixture{C<:ClusterParameters, D<:DataParameters} <: Model
+    cluster_parameters::C
+    data_parameters::D
+end
+
+struct HiddenMarkovModel{C<:ClusterParameters, D<:DataParameters} <: Model
+    cluster_parameters::C
+    data_parameters::D
 end
 
 end
