@@ -2,6 +2,7 @@ module Generate
 
 using ..Models: ClusterParameters, DataParameters, GaussianParameters, GeometricArrivals, NtlParameters
 using ..Models: ArrivalDistribution, MultinomialParameters
+using ..Models: Model, Mixture, Changepoint
 using Distributions
 using LinearAlgebra
 using DataFrames
@@ -27,7 +28,8 @@ function generate_log_pmfs(psi_variates::Array{Float64})
     return log_pmfs
 end
 
-function sample_clusters(arrivals::Array{Int64}, cluster_parameters::ClusterParameters)
+function sample_clusters(arrivals::Array{Int64}, model::Mixture)
+    cluster_parameters = model.cluster_parameters
     n = length(arrivals)
     cluster_assignments = Array{Int64}(undef, n)
     num_clusters = sum(arrivals) 
@@ -56,6 +58,26 @@ function sample_clusters(arrivals::Array{Int64}, cluster_parameters::ClusterPara
     end
 
     return cluster_assignments 
+end
+
+function sample_clusters(arrivals::Array{Int64}, model::Changepoint)
+    n = length(arrivals)
+    changepoint_assignments = Array{Int64}(undef, n)
+    num_changepoints = sum(arrivals) 
+    changepoint_indices = arrivals .=== 1
+    arrival_times = (1:n)[changepoint_indices]
+
+    for index = 1:num_changepoints
+        arrival_time = arrival_times[index]
+        if index === num_changepoints
+            next_arrival_time = n + 1
+        else
+            next_arrival_time = arrival_times[index+1]
+        end
+        changepoint_assignments[arrival_time:(next_arrival_time-1)] .= index
+    end
+
+    return changepoint_assignments 
 end
 
 function sample_cluster_parameters(num_clusters, data_parameters::GaussianParameters)
@@ -100,11 +122,16 @@ function prepare_data_matrix(::Type{T}, dim, n) where {T <: GaussianParameters}
     return Array{Float64}(undef, dim, n)
 end
 
-function generate(n::Int64, data_parameters::DataParameters, cluster_prior_parameters::ClusterParameters)
+get_cluster_parameters(model::Mixture) = model.cluster_parameters
+get_cluster_parameters(model::Changepoint) = model.changepoint_parameters
+
+function generate(model::Model; n::Int64=100)
+    data_parameters = model.data_parameters
+    cluster_prior_parameters = get_cluster_parameters(model)
     dim = data_parameters.dim
     arrivals = generate_arrival_times(n, cluster_prior_parameters.arrival_distribution)
     num_clusters = sum(arrivals)
-    assignments = sample_clusters(arrivals, cluster_prior_parameters)
+    assignments = sample_clusters(arrivals, model)
     data = prepare_data_matrix(typeof(data_parameters), dim, n)
 
     cluster_parameters = sample_cluster_parameters(num_clusters, data_parameters)
@@ -120,9 +147,9 @@ function generate(n::Int64, data_parameters::DataParameters, cluster_prior_param
     assignments = select(assignments, "x1" => "cluster")
     data = DataFrame(transpose(data))
 
-    mixture = hcat(assignments, data)
-    mixture = convert(Matrix, mixture)
-    return mixture
+    data = hcat(assignments, data)
+    data = convert(Matrix, data)
+    return data
 end
 
 end

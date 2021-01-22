@@ -47,5 +47,7 @@ function gumbel_max(objects::Vector{Int64}, weights::Vector{Float64})
     return (objects[index], weights[index])
 end
 
+isnothing(::Any) = false
+isnothing(::Nothing) = true 
 
 end

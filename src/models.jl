@@ -4,9 +4,10 @@ export Model, Mixture, HiddenMarkovModel
 export ArrivalDistribution, GeometricArrivals
 export MixtureParameters, NtlParameters, DpParameters
 export DataParameters, GaussianParameters, MultinomialParameters 
-export SufficientStatistics, ClusterSufficientStatistics, DataSufficientStatistics
+export ClusterSufficientStatistics, DataSufficientStatistics
 export NtlSufficientStatistics, GaussianSufficientStatistics, MultinomialParameters
 export HmmSufficientStatistics, NtlHmmSufficientStatistics, MixtureSufficientStatistics
+export ChangepointSufficientStatistics, NtlChangepointSufficientStatistics, Changepoint
 
 abstract type DataParameters end
 
@@ -70,9 +71,7 @@ struct DpParameters <: ClusterParameters
     alpha::Float64
 end
 
-abstract type SufficientStatistics end
-
-abstract type ClusterSufficientStatistics <: SufficientStatistics end
+abstract type ClusterSufficientStatistics end
 
 abstract type MixtureSufficientStatistics <: ClusterSufficientStatistics end
 
@@ -94,7 +93,12 @@ mutable struct NtlHmmSufficientStatistics <: HmmSufficientStatistics
     clusters::BitArray
 end
 
-abstract type DataSufficientStatistics <: SufficientStatistics end
+struct ChangepointSufficientStatistics <: ClusterSufficientStatistics
+    num_observations::Vector{Int64}
+    changepoints::BitArray 
+end
+
+abstract type DataSufficientStatistics end
 
 struct GaussianSufficientStatistics <: DataSufficientStatistics
     data_means::Matrix{Float64}
@@ -133,6 +137,8 @@ end
 
 abstract type Model end
 
+abstract type ClusteringModel end
+
 struct Mixture{C<:ClusterParameters, D<:DataParameters} <: Model
     cluster_parameters::C
     data_parameters::D
@@ -140,6 +146,11 @@ end
 
 struct HiddenMarkovModel{C<:ClusterParameters, D<:DataParameters} <: Model
     cluster_parameters::C
+    data_parameters::D
+end
+
+struct Changepoint{C<:ClusterParameters, D<:DataParameters} <: Model
+    changepoint_parameters::C
     data_parameters::D
 end
 
