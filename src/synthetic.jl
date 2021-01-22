@@ -127,8 +127,9 @@ get_cluster_parameters(model::Changepoint) = model.changepoint_parameters
 
 function generate(model::Model; n::Int64=100)
     data_parameters = model.data_parameters
-    cluster_prior_parameters = get_cluster_parameters(model)
     dim = data_parameters.dim
+
+    cluster_prior_parameters = get_cluster_parameters(model)
     arrivals = generate_arrival_times(n, cluster_prior_parameters.arrival_distribution)
     num_clusters = sum(arrivals)
     assignments = sample_clusters(arrivals, model)

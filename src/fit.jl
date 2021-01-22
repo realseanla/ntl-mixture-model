@@ -17,9 +17,9 @@ using ProgressBars
 asserting() = true # when set to true, this will enable all `@assertion`s
 
 macro assertion(test)
-  esc(:(if $(@__MODULE__).asserting()
-    @assert($test)
-   end))
+    esc(:(if $(@__MODULE__).asserting()
+        @assert($test)
+    end))
 end
 
 function fit(data::Matrix{T}, model::Union{Mixture, Changepoint}, sampler::GibbsSampler) where {T <: Real}
@@ -36,7 +36,7 @@ function fit(data::Matrix{T}, model::Union{Mixture, Changepoint}, sampler::Gibbs
     end
     for iteration = ProgressBar(2:iterations)
         instances[:, iteration] = instances[:, iteration-1]
-        for observation = 1:size(instances)[1]
+        for observation = 1:n
             remove_observation!(observation, instances, iteration, data, cluster_sufficient_stats, 
                                 data_sufficient_stats, model)
             (cluster, weight) = gibbs_move(observation, data, cluster_sufficient_stats, data_sufficient_stats, model)
@@ -793,14 +793,27 @@ function new_cluster_log_predictive(cluster_sufficient_stats::Union{NtlSufficien
     return log(phi_posterior[1]) - log(sum(phi_posterior))
 end
 
-function new_cluster_log_predictive(::DpSufficientStatistics, cluster_parameters::DpParameters)
+function new_cluster_log_predictive(::Union{DpSufficientStatistics, ChangepointSufficientStatistics}, 
+                                    cluster_parameters::DpParameters)
     return log(cluster_parameters.alpha)
 end
 
-function existing_cluster_log_predictive(cluster_sufficient_stats::Union{NtlSufficientStatistics, ChangepointSufficientStatistics},
+function existing_cluster_log_predictive(cluster_sufficient_stats::NtlSufficientStatistics,
                                          cluster_parameters::NtlParameters{T}) where {T <: GeometricArrivals}
     phi_posterior = compute_arrival_distribution_posterior(cluster_sufficient_stats, cluster_parameters)
     return log(phi_posterior[2]) - log(sum(phi_posterior))
+end
+
+function existing_cluster_log_predictive(cluster_sufficient_stats::ChangepointSufficientStatistics,
+                                         cluster_parameters::NtlParameters{T},
+                                         ::Int64) where {T <: GeometricArrivals}
+    phi_posterior = compute_arrival_distribution_posterior(cluster_sufficient_stats, cluster_parameters)
+    return log(phi_posterior[2]) - log(sum(phi_posterior))
+end
+
+function existing_cluster_log_predictive(cluster_sufficient_stats::ChangepointSufficientStatistics,
+                                         cluster_parameters::DpParameters, changepoint::Int64)
+    return log(cluster_sufficient_stats.num_observations[changepoint] - 1 + cluster_parameters.beta)
 end
 
 # TODO: make a version of this for HMMs
@@ -1044,8 +1057,10 @@ function gibbs_move(observation::Int64, data::Matrix{T}, changepoint_sufficient_
     choices[end] = observation
 
     weights = Array{Float64}(undef, num_changepoints+1)
-    weights[1:num_changepoints] .= existing_cluster_log_predictive(changepoint_sufficient_stats, 
-                                                                   model.changepoint_parameters)
+    for (index, changepoint) in enumerate(changepoints)
+        weights[index] = existing_cluster_log_predictive(changepoint_sufficient_stats, model.changepoint_parameters, 
+                                                         changepoint)
+    end
     weights[num_changepoints+1] = new_cluster_log_predictive(changepoint_sufficient_stats, model.changepoint_parameters)
     weights += compute_data_log_predictives(observation, choices, data, data_sufficient_stats, data_parameters)
 

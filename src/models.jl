@@ -60,6 +60,12 @@ struct GeometricArrivals <: ArrivalDistribution
     prior::Vector{Float64}
 end
 
+struct DirichletProcessArrivals <: ArrivalDistribution
+    beta::Float64
+    alpha::Float64
+    
+end
+
 abstract type ClusterParameters end
 
 struct NtlParameters{T<:ArrivalDistribution} <: ClusterParameters
@@ -68,7 +74,14 @@ struct NtlParameters{T<:ArrivalDistribution} <: ClusterParameters
 end
 
 struct DpParameters <: ClusterParameters
+    beta::Float64
     alpha::Float64
+    function DpParameters(beta, alpha)
+        return new(beta, alpha)
+    end
+    function DpParameters(alpha)
+        return new(0, alpha)
+    end
 end
 
 abstract type ClusterSufficientStatistics end
