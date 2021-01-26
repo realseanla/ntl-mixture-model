@@ -8,7 +8,7 @@ using ..Models: Model, Mixture, HiddenMarkovModel, ClusterSufficientStatistics, 
 using ..Models: ParametricArrivalsClusterParameters, BetaNtlParameters
 using ..Models: ChangepointSufficientStatistics, PitmanYorArrivals, SufficientStatistics 
 using ..Samplers: Sampler, GibbsSampler, SequentialMonteCarlo
-using ..Utils: logbeta, logmvbeta, log_multinomial_coeff, gumbel_max, isnothing
+using ..Utils: logbeta, logmvbeta, log_multinomial_coeff, gumbel_max, isnothing, compute_normalized_weights
 
 using Distributions
 using LinearAlgebra
@@ -24,27 +24,86 @@ macro assertion(test)
 end
 
 function fit(data::Matrix{T}, model::Union{Mixture, Changepoint}, sampler::GibbsSampler) where {T <: Real}
-    iterations = sampler.num_iterations
     n = size(data)[2]
     dim = size(data)[1]
-    instances = Array{Int64}(undef, n, iterations)
+    instances = Array{Int64}(undef, n, sampler.num_iterations)
     n = size(data)[2]
     sufficient_stats = prepare_sufficient_statistics(model, data)
     # Assign all of the observations to the first cluster
     for observation = 1:n
         add_observation!(observation, 1, instances, 1, data, sufficient_stats, model)
     end
-    for iteration = ProgressBar(2:iterations)
+    for iteration = ProgressBar(2:sampler.num_iterations)
         instances[:, iteration] = instances[:, iteration-1]
         for observation = 1:n
-            remove_observation!(observation, instances, iteration, data, sufficient_stats, model)
-            (cluster, weight) = gibbs_move(observation, data, sufficient_stats, model)
-            add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model)
-
-            @assertion sum(sufficient_stats.cluster.num_observations) === n
+            gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model)
         end
     end
     return instances
+end
+
+function gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model::Mixture)
+    remove_observation!(observation, instances, iteration, data, sufficient_stats, model)
+    (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model)
+    add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model)
+end
+
+function gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model::Changepoint)
+    if observation in [1,size(data)[2]] || (instances[observation-1, iteration] !== instances[observation+1, iteration])
+        remove_observation!(observation, instances, iteration, data, sufficient_stats, model)
+        (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model)
+        add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model)
+    end
+end
+
+function gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model::HiddenMarkovModel)
+    remove_observation!(observation, instances, iteration, data, sufficient_stats, model)
+    (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model)
+    add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model)
+end
+
+function gibbs_proposal(observation::Int64, data::Matrix{T}, sufficient_stats::SufficientStatistics, 
+                        model::Mixture) where {T<:Real}
+    data_parameters = model.data_parameters
+    cluster_parameters = model.cluster_parameters
+    clusters = get_clusters(sufficient_stats.cluster)
+    num_clusters = length(clusters)
+
+    choices = Array{Int64}(undef, num_clusters+1)
+    choices[1:num_clusters] = clusters
+    choices[num_clusters+1] = observation
+
+    weights = Array{Float64}(undef, num_clusters+1)
+    weights[1:num_clusters] = compute_existing_cluster_log_predictives(observation, clusters, 
+                                                                       sufficient_stats.cluster, cluster_parameters)
+    weights[num_clusters+1] = new_cluster_log_predictive(sufficient_stats.cluster, cluster_parameters)
+    weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
+
+    return gumbel_max(choices, weights)
+end
+
+function gibbs_proposal(observation::Int64, data::Matrix{T}, sufficient_stats::SufficientStatistics,
+                        model::Changepoint) where {T<:Real}
+    data_parameters = model.data_parameters
+    changepoint_parameters = model.changepoint_parameters
+    n = size(data)[2]
+
+    changepoints = get_changepoints(sufficient_stats.cluster, observation)
+    num_changepoints = length(changepoints)
+
+    choices = Array{Int64}(undef, num_changepoints+1)
+    choices[1:num_changepoints] = changepoints
+    choices[end] = observation
+
+    weights = Array{Float64}(undef, num_changepoints+1)
+    for (index, changepoint) in enumerate(changepoints)
+        weights[index] = existing_cluster_log_predictive(sufficient_stats.cluster, model.changepoint_parameters, 
+                                                         changepoint)
+    end
+    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats.cluster, model.changepoint_parameters)
+    weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
+
+    return gumbel_max(choices, weights)
 end
 
 function fit(data::Matrix{T}, model::Mixture, sampler::SequentialMonteCarlo) where {T <: Real}
@@ -72,8 +131,7 @@ function fit(data::Matrix{T}, model::Mixture, sampler::SequentialMonteCarlo) whe
         for particle = 1:num_particles
             sufficient_stats = sufficient_stats_array[particle]
 
-            prev_cluster = particles[observation-1, particle]
-            (cluster, weight) = propose(observation, prev_cluster, data, sufficient_stats, model)
+            (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model)
 
             add_observation!(observation, cluster, particles, particle, data, sufficient_stats, model)
 
@@ -81,11 +139,10 @@ function fit(data::Matrix{T}, model::Mixture, sampler::SequentialMonteCarlo) whe
 
             sufficient_stats_array[particle] = sufficient_stats
         end
-        weights = exp.(log_weights)
-        normalized_weights = weights./sum(weights)
+        normalized_weights = compute_normalized_weights(log_weights)
         ess = 1/sum(normalized_weights.^2)
-        if ess < ess_threshold 
-            resampled_indices = rand(Categorical(normalized_weights), num_particles)
+        if ess < ess_threshold || observation === n
+            resampled_indices = gumbel_max(num_particles, log_weights)
             particles = particles[:, resampled_indices]
             log_weights .= 1/num_particles
             log_likelihoods = log_likelihoods[resampled_indices]
@@ -151,6 +208,13 @@ function prepare_cluster_sufficient_statistics(::Mixture, n::Int64)
     clusters .= false
     cluster_sufficient_stats = MixtureSufficientStatistics(cluster_num_observations, clusters)
     return cluster_sufficient_stats
+end
+
+function prepare_cluster_sufficient_statistics(::HiddenMarkovModel, n)
+    cluster_num_observations = Matrix{Int64}(zeros(Int64, n, n))
+    clusters = BitArray(undef, n)
+    clusters .= false
+    return HmmSufficientStatistics(cluster_num_observations, clusters)
 end
 
 function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::SufficientStatistics,
@@ -830,53 +894,5 @@ function get_changepoints(changepoint_sufficient_stats::ChangepointSufficientSta
     return Vector{Int64}(changepoints)
 end
 
-function gibbs_move(observation::Int64, data::Matrix{T}, sufficient_stats::SufficientStatistics, model::Mixture) where 
-                   {T <: Real}
-    data_parameters = model.data_parameters
-    cluster_parameters = model.cluster_parameters
-    clusters = get_clusters(sufficient_stats.cluster)
-    num_clusters = length(clusters)
-
-    choices = Array{Int64}(undef, num_clusters+1)
-    choices[1:num_clusters] = clusters
-    choices[num_clusters+1] = observation
-
-    weights = Array{Float64}(undef, num_clusters+1)
-    weights[1:num_clusters] = compute_existing_cluster_log_predictives(observation, clusters, 
-                                                                       sufficient_stats.cluster, cluster_parameters)
-    weights[num_clusters+1] = new_cluster_log_predictive(sufficient_stats.cluster, cluster_parameters)
-    weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
-
-    return gumbel_max(choices, weights)
-end
-
-function gibbs_move(observation::Int64, data::Matrix{T}, sufficient_stats::SufficientStatistics,
-                    model::Changepoint) where {T <: Real}
-    data_parameters = model.data_parameters
-    changepoint_parameters = model.changepoint_parameters
-    n = size(data)[2]
-
-    changepoints = get_changepoints(sufficient_stats.cluster, observation)
-    num_changepoints = length(changepoints)
-
-    choices = Array{Int64}(undef, num_changepoints+1)
-    choices[1:num_changepoints] = changepoints
-    choices[end] = observation
-
-    weights = Array{Float64}(undef, num_changepoints+1)
-    for (index, changepoint) in enumerate(changepoints)
-        weights[index] = existing_cluster_log_predictive(sufficient_stats.cluster, model.changepoint_parameters, 
-                                                         changepoint)
-    end
-    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats.cluster, model.changepoint_parameters)
-    weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
-
-    return gumbel_max(choices, weights)
-end
-
-function propose(observation::Int64, ::Int64, data::Matrix{T}, sufficient_stats::SufficientStatistics,
-                 model::Model) where {T <: Real}
-    return gibbs_move(observation, data, sufficient_stats, model)    
-end
 
 end

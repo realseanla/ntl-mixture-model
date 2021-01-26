@@ -41,13 +41,31 @@ function log_multinomial_coeff(counts::Vector{Int64})
     return logfactorial(sum(counts)) - sum(logfactorial.(counts)) 
 end
 
-function gumbel_max(objects::Vector{Int64}, weights::Vector{Float64})
-    gumbel_values = rand(Gumbel(0, 1), length(weights))
-    index = argmax(gumbel_values + weights)
-    return (objects[index], weights[index])
+function gumbel_max(objects::Vector{Int64}, log_weights::Vector{Float64})
+    gumbel_values = rand(Gumbel(0, 1), length(log_weights))
+    index = argmax(gumbel_values + log_weights)
+    return (objects[index], log_weights[index])
+end
+
+function gumbel_max(num_draws::Int64, log_weights::Vector{Float64})
+    indices = Vector{Int64}(1:length(log_weights))
+    resampled_indices = Vector{Int64}(undef, num_draws) 
+    for i = 1:num_draws
+        (sampled_index, log_weight) = gumbel_max(indices, log_weights) 
+        resampled_indices[i] = sampled_index
+    end
+    return resampled_indices
 end
 
 isnothing(::Any) = false
 isnothing(::Nothing) = true 
+
+function compute_normalized_weights(log_weights)
+    num_weights = length(log_weights)
+    max_value = maximum(log_weights)
+    scaled_weights = exp.(log_weights .- max_value .+ log(num_weights))
+    normalized_weights = scaled_weights ./ sum(scaled_weights)
+    return normalized_weights
+end
 
 end

@@ -168,7 +168,7 @@ struct Mixture{C<:Union{ClusterParameters, ParametricArrivalsClusterParameters},
     data_parameters::D
 end
 
-struct HiddenMarkovModel{C<:ClusterParameters, D<:DataParameters} <: Model
+struct HiddenMarkovModel{C<:Union{ClusterParameters, ParametricArrivalsClusterParameters}, D<:DataParameters} <: Model
     cluster_parameters::C
     data_parameters::D
 end
