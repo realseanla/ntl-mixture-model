@@ -3,10 +3,10 @@ module Fitter
 using ..Models: DataParameters, ClusterParameters, GaussianParameters, NtlParameters, DpParameters
 using ..Models: DataSufficientStatistics, MixtureSufficientStatistics, GaussianSufficientStatistics
 using ..Models: MultinomialParameters, MultinomialSufficientStatistics, GeometricArrivals
-using ..Models: NtlHmmSufficientStatistics, HmmSufficientStatistics
+using ..Models: HmmSufficientStatistics
 using ..Models: Model, Mixture, HiddenMarkovModel, ClusterSufficientStatistics, Changepoint
 using ..Models: ParametricArrivalsClusterParameters, BetaNtlParameters
-using ..Models: ChangepointSufficientStatistics, PitmanYorArrivals 
+using ..Models: ChangepointSufficientStatistics, PitmanYorArrivals, SufficientStatistics 
 using ..Samplers: Sampler, GibbsSampler, SequentialMonteCarlo
 using ..Utils: logbeta, logmvbeta, log_multinomial_coeff, gumbel_max, isnothing
 
@@ -29,22 +29,19 @@ function fit(data::Matrix{T}, model::Union{Mixture, Changepoint}, sampler::Gibbs
     dim = size(data)[1]
     instances = Array{Int64}(undef, n, iterations)
     n = size(data)[2]
-    cluster_sufficient_stats = prepare_cluster_sufficient_statistics(model, n)
-    data_sufficient_stats = prepare_data_sufficient_statistics(data, model.data_parameters)
+    sufficient_stats = prepare_sufficient_statistics(model, data)
     # Assign all of the observations to the first cluster
     for observation = 1:n
-        add_observation!(observation, 1, instances, 1, data, cluster_sufficient_stats, data_sufficient_stats, model)
+        add_observation!(observation, 1, instances, 1, data, sufficient_stats, model)
     end
     for iteration = ProgressBar(2:iterations)
         instances[:, iteration] = instances[:, iteration-1]
         for observation = 1:n
-            remove_observation!(observation, instances, iteration, data, cluster_sufficient_stats, 
-                                data_sufficient_stats, model)
-            (cluster, weight) = gibbs_move(observation, data, cluster_sufficient_stats, data_sufficient_stats, model)
-            add_observation!(observation, cluster, instances, iteration, data, cluster_sufficient_stats, 
-                             data_sufficient_stats, model)
+            remove_observation!(observation, instances, iteration, data, sufficient_stats, model)
+            (cluster, weight) = gibbs_move(observation, data, sufficient_stats, model)
+            add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model)
 
-            @assertion sum(cluster_sufficient_stats.num_observations) === n
+            @assertion sum(sufficient_stats.cluster.num_observations) === n
         end
     end
     return instances
@@ -61,38 +58,28 @@ function fit(data::Matrix{T}, model::Mixture, sampler::SequentialMonteCarlo) whe
     log_likelihoods = zeros(Float64, num_particles)
     log_weights = Array{Float64}(undef, num_particles)
 
-    cluster_sufficient_stats_array = prepare_cluster_sufficient_statistics(model, num_particles, n)
-    # Prepare sufficient statistics for each particle
-    data_sufficient_stats_array = prepare_data_sufficient_statistics(num_particles, data, model.data_parameters)
+    sufficient_stats_array = prepare_sufficient_statistics(model, data, num_particles)
 
     # Assign first observation to first cluster
     for particle = 1:num_particles
-        cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
-        data_sufficient_stats = data_sufficient_stats_array[particle]
+        sufficient_stats = sufficient_stats_array[particle]
         cluster = 1
         observation = 1
-        add_observation!(observation, cluster, particles, particle, data, cluster_sufficient_stats, 
-                         data_sufficient_stats, model)
-        cluster_sufficient_stats_array[particle] = cluster_sufficient_stats
-        data_sufficient_stats_array[particle] = data_sufficient_stats
+        add_observation!(observation, cluster, particles, particle, data, sufficient_stats, model)
+        sufficient_stats_array[particle] = sufficient_stats
     end
     for observation = ProgressBar(2:n)
         for particle = 1:num_particles
-            cluster_sufficient_stats = cluster_sufficient_stats_array[particle]
-            data_sufficient_stats = data_sufficient_stats_array[particle]
+            sufficient_stats = sufficient_stats_array[particle]
 
             prev_cluster = particles[observation-1, particle]
-            (cluster, weight) = propose(observation, prev_cluster, data, cluster_sufficient_stats, 
-                                        data_sufficient_stats, model)
+            (cluster, weight) = propose(observation, prev_cluster, data, sufficient_stats, model)
 
-            add_observation!(observation, cluster, particles, particle, data, cluster_sufficient_stats, 
-                             data_sufficient_stats, model)
+            add_observation!(observation, cluster, particles, particle, data, sufficient_stats, model)
 
-            compute_log_weight!(log_weights, log_likelihoods, weight, data_sufficient_stats, cluster_sufficient_stats, 
-                                model, particle)
+            compute_log_weight!(log_weights, log_likelihoods, weight, sufficient_stats, model, particle)
 
-            cluster_sufficient_stats_array[particle] = cluster_sufficient_stats
-            data_sufficient_stats_array[particle] = data_sufficient_stats
+            sufficient_stats_array[particle] = sufficient_stats
         end
         weights = exp.(log_weights)
         normalized_weights = weights./sum(weights)
@@ -102,11 +89,25 @@ function fit(data::Matrix{T}, model::Mixture, sampler::SequentialMonteCarlo) whe
             particles = particles[:, resampled_indices]
             log_weights .= 1/num_particles
             log_likelihoods = log_likelihoods[resampled_indices]
-            cluster_sufficient_stats_array = cluster_sufficient_stats_array[resampled_indices]
-            data_sufficient_stats_array = data_sufficient_stats_array[resampled_indices]
+            sufficient_stats_array = sufficient_stats_array[resampled_indices]
         end
     end
     return particles
+end
+
+function prepare_sufficient_statistics(model, data)
+    n = size(data)[2]
+    cluster_sufficient_stats = prepare_cluster_sufficient_statistics(model, n)
+    data_sufficient_stats = prepare_data_sufficient_statistics(data, model.data_parameters)
+    return SufficientStatistics(cluster_sufficient_stats, data_sufficient_stats)
+end
+
+function prepare_sufficient_statistics(model, data, num_particles)
+    sufficient_statistics_array = Array{SufficientStatistics}(undef, num_particles)
+    for i=1:num_particles
+        sufficient_statistics_array[i] = prepare_sufficient_statistics(model, data)
+    end
+    return sufficient_statistics_array
 end
 
 function prepare_data_sufficient_statistics(data::Matrix{Float64}, data_parameters::GaussianParameters)
@@ -125,15 +126,6 @@ function prepare_data_sufficient_statistics(data::Matrix{Float64}, data_paramete
     return GaussianSufficientStatistics(data_means, data_precision_quadratic_sums, posterior_means, posterior_covs)
 end
 
-function prepare_data_sufficient_statistics(num_particles::Int64, data::Matrix{Float64}, 
-                                            data_parameters::GaussianParameters)
-    sufficient_stats = Array{GaussianSufficientStatistics}(undef, num_particles)
-    for particle = 1:num_particles
-        sufficient_stats[particle] = prepare_data_sufficient_statistics(data, data_parameters)
-    end
-    return sufficient_stats
-end
-
 function prepare_data_sufficient_statistics(data::Matrix{Int64}, data_parameters::MultinomialParameters)
     dim = size(data)[1]
     n = size(data)[2]
@@ -143,15 +135,6 @@ function prepare_data_sufficient_statistics(data::Matrix{Int64}, data_parameters
         posterior_dirichlet_scale[:, i] = vec(data_parameters.prior_dirichlet_scale)
     end
     return MultinomialSufficientStatistics(counts, posterior_dirichlet_scale)
-end
-
-function prepare_data_sufficient_statistics(num_particles::Int64, data::Matrix{Int64}, 
-                                            data_parameters::MultinomialParameters)
-    sufficient_stats = Array{MultinomialSufficientStatistics}(undef, num_particles)
-    for particle = 1:num_particles
-        sufficient_stats[particle] = prepare_data_sufficient_statistics(data, data_parameters)
-    end
-    return sufficient_stats
 end
 
 function prepare_cluster_sufficient_statistics(::Changepoint, n::Int64)
@@ -170,56 +153,26 @@ function prepare_cluster_sufficient_statistics(::Mixture, n::Int64)
     return cluster_sufficient_stats
 end
 
-function prepare_cluster_sufficient_statistics(::HiddenMarkovModel{T}, n::Int64) where {T <: NtlParameters}
-    cluster_num_observations = zeros(Int64, n+1, n+1) # (source state) -> (target state)
-    clusters = BitArray(undef, n)
-    clusters .= false
-    cluster_sufficient_stats = NtlHmmSufficientStatistics(cluster_num_observations, clusters)
-end
-
-function prepare_cluster_sufficient_statistics(model::Mixture, num_states::Int64, n::Int64)
-    sufficient_stats = Array{MixtureSufficientStatistics}(undef, num_states)
-    for state = 1:num_states
-        sufficient_stats[state] = prepare_cluster_sufficient_statistics(model, n)
-    end
-    return sufficient_stats
-end
-
-function prepare_cluster_sufficient_statistics(model::HiddenMarkovModel{T}, num_particles::Int64, n::Int64) where {T <: NtlParameters}
-    # The (n+1)th state corresponds to the non-existent null state
-    sufficient_stats = Array{NtlHmmSufficientStatistics}(undef, num_particles)
-    for state = 1:num_states
-        sufficient_stats[state] = prepare_cluster_sufficient_statistics(model, n)
-    end
-    return sufficient_stats
-end
-
-function prepare_cluster_sufficient_statistics(::ClusterParameters, num_observations::Vector{Int64}, clusters::BitArray)
-    cluster_sufficient_stats = MixtureSufficientStatistics(num_observations, clusters)
-    return cluster_sufficient_stats
-end
-
-function compute_cluster_data_log_likelihood(cluster::Int64, data_sufficient_stats::MultinomialSufficientStatistics,
-                                             data_parameters::MultinomialParameters, ::MixtureSufficientStatistics)
-    dirichlet_posterior = data_sufficient_stats.posterior_dirichlet_scale[:, cluster]
+function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::SufficientStatistics,
+                                             data_parameters::MultinomialParameters)
+    dirichlet_posterior = sufficient_stats.data.posterior_dirichlet_scale[:, cluster]
     dirichlet_prior = data_parameters.prior_dirichlet_scale
     counts = convert(Vector{Int64}, dirichlet_posterior - dirichlet_prior)
     log_likelihood = log_multinomial_coeff(counts) + logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
     return log_likelihood
 end
 
-function compute_cluster_data_log_likelihood(cluster::Int64, data_sufficient_stats::GaussianSufficientStatistics, 
-                                             data_parameters::GaussianParameters, 
-                                             cluster_sufficient_stats::MixtureSufficientStatistics)
-    posterior_mean = vec(data_sufficient_stats.posterior_means[:, cluster])
+function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::SufficientStatistics, 
+                                             data_parameters::GaussianParameters) 
+    posterior_mean = vec(sufficient_stats.data.posterior_means[:, cluster])
     dim = length(posterior_mean)
-    posterior_covariance = reshape(data_sufficient_stats.posterior_covs[:, cluster], dim, dim)
+    posterior_covariance = reshape(sufficient_stats.data.posterior_covs[:, cluster], dim, dim)
     posterior_precision = inv(posterior_covariance)
     prior_mean = data_parameters.prior_mean
     prior_covariance = data_parameters.prior_covariance
     prior_precision = inv(prior_covariance)
 
-    data_precision_quadratic_sum = data_sufficient_stats.data_precision_quadratic_sums[cluster]
+    data_precision_quadratic_sum = sufficient_stats.data.data_precision_quadratic_sums[cluster]
     posterior_quadratic = transpose(posterior_mean) * posterior_covariance * posterior_mean 
     prior_quadratic = transpose(prior_mean) * prior_precision * prior_mean
 
@@ -229,17 +182,16 @@ function compute_cluster_data_log_likelihood(cluster::Int64, data_sufficient_sta
     prior_log_determinant = log(abs(det(prior_covariance)))
     posterior_log_determinant = log(abs(det(posterior_covariance)))
 
-    n = cluster_sufficient_stats.num_observations[cluster]
+    n = sufficient_stats.cluster.num_observations[cluster]
     log_likelihood += log(2*pi)*dim*(n + 1)/2 - (n/2)data_log_determinant - (1/2)prior_log_determinant
     return log_likelihood
 end
 
-function compute_data_log_likelihood(data_sufficient_stats::DataSufficientStatistics, data_parameters::DataParameters, 
-                                     cluster_sufficient_stats::MixtureSufficientStatistics, clusters::Vector{Int64})
+function compute_data_log_likelihood(sufficient_stats::SufficientStatistics, data_parameters::DataParameters, 
+                                     clusters::Vector{Int64})
     log_likelihood = 0
     for cluster = clusters
-        log_likelihood += compute_cluster_data_log_likelihood(cluster, data_sufficient_stats, data_parameters,
-                                                              cluster_sufficient_stats)
+        log_likelihood += compute_cluster_data_log_likelihood(cluster, sufficient_stats, data_parameters)
     end
     return log_likelihood
 end
@@ -274,52 +226,31 @@ function compute_assignment_log_likelihood(cluster_sufficient_stats::MixtureSuff
     return log_likelihood
 end
 
-function compute_assignment_log_likelihood(cluster_sufficient_stats::NtlHmmSufficientStatistics,
-                                           cluster_parameters::ClusterParameters, clusters::Vector{Int64})
-    log_likelihood = 0
-    n = length(cluster_sufficient_stats.clusters)
-    for cluster = clusters
-        source_clusters = findall(>(0), cluster_sufficient_stats.num_observations[1:n, cluster])
-        for source_cluster = source_clusters
-            num_observations = cluster_sufficient_stats.num_observations[source_cluster, 1:n]
-            log_likelihood += compute_cluster_assignment_log_likelihood(cluster, num_observations, cluster_parameters)
-        end
-    end
-    log_likelihood += compute_arrivals_log_likelihood(cluster_sufficient_stats, cluster_parameters)
-    return log_likelihood
-end
-
-function compute_joint_log_likelihood(data_sufficient_stats::DataSufficientStatistics, 
-                                      cluster_sufficient_stats::ClusterSufficientStatistics, model::Mixture)
+function compute_joint_log_likelihood(sufficient_stats::SufficientStatistics, model::Mixture)
     data_parameters = model.data_parameters
     cluster_parameters = model.cluster_parameters
-    clusters = get_clusters(cluster_sufficient_stats)
-    log_likelihood = compute_data_log_likelihood(data_sufficient_stats, data_parameters, cluster_sufficient_stats, 
-                                                 clusters)
-    log_likelihood += compute_assignment_log_likelihood(cluster_sufficient_stats, cluster_parameters, clusters)
+    clusters = get_clusters(sufficient_stats.cluster)
+    log_likelihood = compute_data_log_likelihood(sufficient_stats, data_parameters, clusters)
+    log_likelihood += compute_assignment_log_likelihood(sufficient_stats.cluster, cluster_parameters, clusters)
     return log_likelihood
 end
 
 function compute_log_weight!(log_weights::Vector{Float64}, log_likelihoods::Vector{Float64}, 
-                             proposal_log_weight::Float64, data_sufficient_stats::DataSufficientStatistics, 
-                             cluster_sufficient_stats::ClusterSufficientStatistics,
+                             proposal_log_weight::Float64, sufficient_stats::SufficientStatistics, 
                              model::Model, particle::Int64)
     previous_log_weight = log_weights[particle]
     previous_log_likelihood = log_likelihoods[particle]
-    log_likelihood = compute_joint_log_likelihood(data_sufficient_stats, cluster_sufficient_stats, model)
+    log_likelihood = compute_joint_log_likelihood(sufficient_stats, model)
     log_weights[particle] = previous_log_weight + log_likelihood - previous_log_likelihood - proposal_log_weight
     log_likelihoods[particle] = log_likelihood
 end
 
-# TODO: make an HMM version of this function
-function update_data_sufficient_statistics!(data_sufficient_stats::GaussianSufficientStatistics, 
-                                            cluster::Int64, datum::Vector{Float64},
-                                            cluster_sufficient_stats::Union{MixtureSufficientStatistics, ChangepointSufficientStatistics},
-                                            model::Union{Mixture, Changepoint};
-                                            update_type::String="add")
-    cluster_mean = vec(data_sufficient_stats.data_means[:, cluster])
-    data_precision_quadratic_sum = data_sufficient_stats.data_precision_quadratic_sums[cluster] 
-    n = cluster_sufficient_stats.num_observations[cluster]
+function update_data_sufficient_statistics!(sufficient_stats::SufficientStatistics{C,D}, cluster::Int64, 
+                                            datum::Vector{Float64}, model::Union{Mixture, Changepoint};
+                                            update_type::String="add") where {C, D<:GaussianSufficientStatistics}
+    cluster_mean = vec(sufficient_stats.data.data_means[:, cluster])
+    data_precision_quadratic_sum = sufficient_stats.data.data_precision_quadratic_sums[cluster] 
+    n = sufficient_stats.cluster.num_observations[cluster]
     datum_precision_quadratic_sum = transpose(datum)*model.data_parameters.data_precision*datum
     if update_type == "add"
         cluster_mean = (cluster_mean.*(n-1) + datum)./n
@@ -336,15 +267,14 @@ function update_data_sufficient_statistics!(data_sufficient_stats::GaussianSuffi
         message = "$update_type is not a supported update type."
         throw(ArgumentError(message))
     end
-    data_sufficient_stats.data_means[:, cluster] = cluster_mean
-    data_sufficient_stats.data_precision_quadratic_sums[cluster] = data_precision_quadratic_sum
+    sufficient_stats.data.data_means[:, cluster] = cluster_mean
+    sufficient_stats.data.data_precision_quadratic_sums[cluster] = data_precision_quadratic_sum
 end
 
-function update_data_sufficient_statistics!(data_sufficient_stats::MultinomialSufficientStatistics,
-                                            cluster::Int64, datum::Vector{Int64}, 
-                                            ::Union{MixtureSufficientStatistics, ChangepointSufficientStatistics},
-                                            ::Union{Mixture, Changepoint}; update_type::String="add")
-    cluster_counts = vec(data_sufficient_stats.total_counts[:, cluster])
+function update_data_sufficient_statistics!(sufficient_stats::SufficientStatistics{C,D}, cluster::Int64, 
+                                            datum::Vector{Int64}, ::Union{Mixture, Changepoint}; 
+                                            update_type::String="add") where {C, D<:MultinomialSufficientStatistics}
+    cluster_counts = vec(sufficient_stats.data.total_counts[:, cluster])
     if update_type === "add"
         cluster_counts += datum 
     elseif update_type === "remove"
@@ -353,18 +283,16 @@ function update_data_sufficient_statistics!(data_sufficient_stats::MultinomialSu
         message = "$update_type is not a supported update type."
         throw(ArgumentError(message))
     end
-    data_sufficient_stats.total_counts[:, cluster] = cluster_counts
+    sufficient_stats.data.total_counts[:, cluster] = cluster_counts
 end
 
-function update_data_sufficient_statistics!(data_sufficient_stats::GaussianSufficientStatistics,
-                                            changepoint::Int64, data::Matrix{T}, 
-                                            changepoint_sufficient_stats::ChangepointSufficientStatistics, 
-                                            model::Changepoint; 
-                                            update_type="add") where {T <: Real}
-    changepoint_mean = vec(data_sufficient_stats.data_means[:, changepoint])
-    data_precision_quadratic_sum = data_sufficient_stats.data_precision_quadratic_sums[changepoint] 
+function update_data_sufficient_statistics!(sufficient_stats::SufficientStatistics{C,D}, changepoint::Int64, 
+                                            data::Matrix{T}, model::Changepoint; update_type="add") where 
+                                            {T<:Real, C, D<:GaussianSufficientStatistics}
+    changepoint_mean = vec(sufficient_stats.data.data_means[:, changepoint])
+    data_precision_quadratic_sum = sufficient_stats.data.data_precision_quadratic_sums[changepoint] 
 
-    n = changepoint_sufficient_stats.num_observations[changepoint]
+    n = sufficient_stats.cluster.num_observations[changepoint]
     new_data_size = size(data)[2]
     new_precision_quadratic_sum = sum(transpose(data) * model.data_parameters.data_precision .* transpose(data))
     new_data_sum = sum(data, dims=2)
@@ -374,55 +302,57 @@ function update_data_sufficient_statistics!(data_sufficient_stats::GaussianSuffi
             changepoint_mean = new_data_sum/new_data_size 
             data_precision_quadratic_sum = new_precision_quadratic_sum
 
-            data_sufficient_stats.data_means[:, changepoint] = changepoint_mean
-            data_sufficient_stats.data_precision_quadratic_sums[changepoint] = data_precision_quadratic_sum
+            sufficient_stats.data.data_means[:, changepoint] = changepoint_mean
+            sufficient_stats.data.data_precision_quadratic_sums[changepoint] = data_precision_quadratic_sum
         end
     elseif update_type === "add"
         changepoint_mean = (n.*changepoint_mean + new_data_sum)./(n + new_data_size)
         data_precision_quadratic_sum += new_precision_quadratic_sum
-        data_sufficient_stats.data_means[:, changepoint] = changepoint_mean
-        data_sufficient_stats.data_precision_quadratic_sums[changepoint] = data_precision_quadratic_sum
+        sufficient_stats.data.data_means[:, changepoint] = changepoint_mean
+        sufficient_stats.data.data_precision_quadratic_sums[changepoint] = data_precision_quadratic_sum
     elseif update_type === "remove"
         changepoint_mean = (n.*changepoint_mean - new_data_sum)./(n - new_data_size)
         data_precision_quadratic_sum -= new_precision_quadratic_sum
-        data_sufficient_stats.data_means[:, changepoint] = changepoint_mean
-        data_sufficient_stats.data_precision_quadratic_sums[changepoint] = data_precision_quadratic_sum
+        sufficient_stats.data.data_means[:, changepoint] = changepoint_mean
+        sufficient_stats.data.data_precision_quadratic_sums[changepoint] = data_precision_quadratic_sum
     else
         message = "$update_type is not a supported update type."
         throw(ArgumentError(message))
     end
 end
 
-function update_data_sufficient_statistics!(data_sufficient_stats::MultinomialSufficientStatistics,
-                                            changepoint::Int64, data::Matrix{T}, 
-                                            ::ChangepointSufficientStatistics, 
-                                            ::Changepoint; update_type="add") where {T <: Real}
+"""
+Handles multiple data points when merging clusters
+"""
+function update_data_sufficient_statistics!(sufficient_stats::SufficientStatistics{C,D}, changepoint::Int64, 
+                                            data::Matrix{T}, ::Changepoint; update_type="add") where 
+                                            {T<:Real, C, D<:MultinomialSufficientStatistics}
     counts = sum(data, dims=2)
     if update_type === "new"
         if any(counts .> 0)
-            data_sufficient_stats.total_counts[:, changepoint] = counts
+            sufficient_stats.data.total_counts[:, changepoint] = counts
         end
     elseif update_type === "add"
-        data_sufficient_stats.total_counts[:, changepoint] += counts
+        sufficient_stats.data.total_counts[:, changepoint] += counts
     elseif update_type === "remove"
-        data_sufficient_stats.total_counts[:, changepoint] -= counts
+        sufficient_stats.data.total_counts[:, changepoint] -= counts
     else
         message = "$update_type is not a supported update type."
         throw(ArgumentError(message))
     end
 end
 
-function update_cluster_sufficient_statistics!(cluster_sufficient_stats::MixtureSufficientStatistics, cluster::Int64; 
+function update_cluster_sufficient_statistics!(sufficient_stats::SufficientStatistics, cluster::Int64; 
                                                update_type::String="add")
     if update_type === "add"
-        cluster_sufficient_stats.num_observations[cluster] += 1
-        if cluster_sufficient_stats.num_observations[cluster] === 1
-            cluster_sufficient_stats.clusters[cluster] = true
+        sufficient_stats.cluster.num_observations[cluster] += 1
+        if sufficient_stats.cluster.num_observations[cluster] === 1
+            sufficient_stats.cluster.clusters[cluster] = true
         end
     elseif update_type === "remove"
-        cluster_sufficient_stats.num_observations[cluster] -= 1
-        if cluster_sufficient_stats.num_observations[cluster] === 0
-            cluster_sufficient_stats.clusters[cluster] = false
+        sufficient_stats.cluster.num_observations[cluster] -= 1
+        if sufficient_stats.cluster.num_observations[cluster] === 0
+            sufficient_stats.cluster.clusters[cluster] = false
         end
     else
         message = "$update_type is not a supported update type."
@@ -430,17 +360,17 @@ function update_cluster_sufficient_statistics!(cluster_sufficient_stats::Mixture
     end
 end
 
-function update_changepoint_sufficient_statistics!(changepoint_sufficient_stats::ChangepointSufficientStatistics,
-                                                   changepoint::Int64; update_type::String="remove")
+function update_changepoint_sufficient_statistics!(sufficient_stats::SufficientStatistics, changepoint::Int64; 
+                                                   update_type::String="remove")
     if update_type === "remove"
-        changepoint_sufficient_stats.num_observations[changepoint] -= 1
-        if changepoint_sufficient_stats.num_observations[changepoint] === 0
-            changepoint_sufficient_stats.changepoints[changepoint] = false
+        sufficient_stats.cluster.num_observations[changepoint] -= 1
+        if sufficient_stats.cluster.num_observations[changepoint] === 0
+            sufficient_stats.cluster.changepoints[changepoint] = false
         end
     elseif update_type === "add"
-        changepoint_sufficient_stats.num_observations[changepoint] += 1
-        if changepoint_sufficient_stats.num_observations[changepoint] === 1
-            changepoint_sufficient_stats.changepoints[changepoint] = true
+        sufficient_stats.cluster.num_observations[changepoint] += 1
+        if sufficient_stats.cluster.num_observations[changepoint] === 1
+            sufficient_stats.cluster.changepoints[changepoint] = true
         end
     else
         message = "$update_type is not a supported update type."
@@ -448,40 +378,22 @@ function update_changepoint_sufficient_statistics!(changepoint_sufficient_stats:
     end
 end
 
-function update_changepoint_sufficient_statistics!(changepoint_sufficient_stats::ChangepointSufficientStatistics,
-                                                   changepoint::Int64, changepoint_segment::BitArray;
-                                                   update_type::String="add")
+function update_changepoint_sufficient_statistics!(sufficient_stats::SufficientStatistics, changepoint::Int64, 
+                                                   changepoint_segment::BitArray; update_type::String="add")
+                                                   
     num_observations = count(changepoint_segment)
     if update_type === "new"
         if num_observations > 0
-            changepoint_sufficient_stats.num_observations[changepoint] = num_observations
-            changepoint_sufficient_stats.changepoints[changepoint] = true
+            sufficient_stats.cluster.num_observations[changepoint] = num_observations
+            sufficient_stats.cluster.changepoints[changepoint] = true
         end
     elseif update_type === "add"
-        @assertion changepoint_sufficient_stats.num_observations[changepoint] !== 0
-        changepoint_sufficient_stats.num_observations[changepoint] += num_observations
+        @assertion sufficient_stats.cluster.num_observations[changepoint] !== 0
+        sufficient_stats.cluster.num_observations[changepoint] += num_observations
     elseif update_type === "remove"
-        changepoint_sufficient_stats.num_observations[changepoint] -= num_observations
-        if changepoint_sufficient_stats.num_observations[changepoint] === 0
-            changepoint_sufficient_stats.changepoints[changepoint] = false
-        end
-    else
-        message = "$update_type is not a supported update type."
-        throw(ArgumentError(message))
-    end
-end
-
-function update_cluster_sufficient_statistics!(cluster_sufficient_stats::HmmSufficientStatistics, cluster::Int64, 
-                                               prev_cluster::Int64; update_type::String="add")
-    if update_type === "add"
-        cluster_sufficient_stats.num_observations[prev_cluster, cluster] += 1
-        if sum(cluster_sufficient_stats.num_observations[:, cluster]) === 1
-            cluster_sufficient_stats.clusters[cluster] = true
-        end
-    elseif update_type === "remove"
-        cluster_sufficient_stats.num_observations[prev_cluster, cluster] -= 1
-        if sum(cluster_sufficient_stats.num_observations[:, cluster]) === 0
-            cluster_sufficient_stats.clusters[cluster] = false
+        sufficient_stats.cluster.num_observations[changepoint] -= num_observations
+        if sufficient_stats.cluster.num_observations[changepoint] === 0
+            sufficient_stats.cluster.changepoints[changepoint] = false
         end
     else
         message = "$update_type is not a supported update type."
@@ -508,20 +420,6 @@ function update_cluster_stats_new_birth_time!(cluster_sufficient_stats::MixtureS
     cluster_sufficient_stats.clusters[old_time] = false
 end
 
-function update_cluster_stats_new_birth_time!(cluster_sufficient_stats::HmmSufficientStatistics,
-                                              new_time::Int64, old_time::Int64)
-    clusters = get_clusters(cluster_sufficient_stats)
-    for cluster = clusters
-        num_observations = cluster_sufficient_stats.num_observation[cluster, :]
-        update_cluster_stats_new_birth_time!(num_observations, new_time, old_time)
-        cluster_sufficient_stats_array.num_observations[cluster, :] = num_observations
-    end
-    cluster_sufficient_stats.num_observations[new_time, :] = cluster_sufficient_stats.num_observations[old_time, :]
-    cluster_sufficient_stats.num_observations[old_time, :] .= 0
-    cluster_sufficient_stats.clusters[new_time] = true
-    cluster_sufficient_stats.clusters[old_time] = false
-end
-
 function update_data_stats_new_birth_time!(data_sufficient_stats::GaussianSufficientStatistics, 
                                            new_time::Int64, old_time::Int64, data_parameters::GaussianParameters)
     data_sufficient_stats.data_means[:, new_time] = data_sufficient_stats.data_means[:, old_time]
@@ -543,39 +441,34 @@ function update_data_stats_new_birth_time!(data_sufficient_stats::MultinomialSuf
 end
 
 function update_cluster_birth_time_remove!(cluster::Int64, iteration::Int64, instances::Matrix{Int64}, 
-                                           cluster_sufficient_stats::Union{HmmSufficientStatistics, MixtureSufficientStatistics},
-                                           data_sufficient_stats::DataSufficientStatistics, 
+                                           sufficient_stats::SufficientStatistics,
                                            data_parameters::DataParameters)
     assigned_to_cluster = instances[:, iteration] .=== cluster
     new_cluster_time = findfirst(assigned_to_cluster)
     instances[assigned_to_cluster, iteration] .= new_cluster_time 
-    update_cluster_stats_new_birth_time!(cluster_sufficient_stats, new_cluster_time, cluster)
-    update_data_stats_new_birth_time!(data_sufficient_stats, new_cluster_time, cluster, data_parameters)
+    update_cluster_stats_new_birth_time!(sufficient_stats.cluster, new_cluster_time, cluster)
+    update_data_stats_new_birth_time!(sufficient_stats.data, new_cluster_time, cluster, data_parameters)
     return new_cluster_time
 end
 
 function remove_observation!(observation::Int64, instances::Matrix{Int64}, iteration::Int64, data::Matrix{T}, 
-                             cluster_sufficient_stats::MixtureSufficientStatistics,
-                             data_sufficient_stats::DataSufficientStatistics,
-                             model::Mixture) where {T <: Real}
+                             sufficient_stats::SufficientStatistics, model::Mixture) where {T <: Real}
     n = size(instances)[1]
     cluster = instances[observation, iteration]
 
     instances[observation, iteration] = n+1 
     datum = vec(data[:, observation])
-    update_cluster_sufficient_statistics!(cluster_sufficient_stats, cluster, update_type="remove")
-    update_data_sufficient_statistics!(data_sufficient_stats, cluster, datum, cluster_sufficient_stats, model, 
-                                       update_type="remove")
-    compute_data_posterior_parameters!(cluster, cluster_sufficient_stats, data_sufficient_stats, model.data_parameters)
-    if (cluster === observation) && (cluster_sufficient_stats.num_observations[cluster] > 0)
-        cluster = update_cluster_birth_time_remove!(cluster, iteration, instances, cluster_sufficient_stats, 
-                                                    data_sufficient_stats, model.data_parameters)
+    update_cluster_sufficient_statistics!(sufficient_stats, cluster, update_type="remove")
+    update_data_sufficient_statistics!(sufficient_stats, cluster, datum, model, update_type="remove")
+    compute_data_posterior_parameters!(cluster, sufficient_stats, model.data_parameters)
+    if (cluster === observation) && (sufficient_stats.cluster.num_observations[cluster] > 0)
+        cluster = update_cluster_birth_time_remove!(cluster, iteration, instances, sufficient_stats, 
+                                                    model.data_parameters)
     end
 end
 
 function remove_observation!(observation::Int64, instances::Matrix{Int64}, iteration::Int64, data::Matrix{T}, 
-                             changepoint_sufficient_stats::ChangepointSufficientStatistics,
-                             data_sufficient_stats::DataSufficientStatistics, model::Model) where {T <: Real}
+                             sufficient_stats::SufficientStatistics, model::Changepoint) where {T <: Real}
     n = size(instances)[1]
     changepoint = instances[observation, iteration]
 
@@ -586,178 +479,73 @@ function remove_observation!(observation::Int64, instances::Matrix{Int64}, itera
     instances[new_changepoint_segment, iteration] .= new_changepoint
 
     # remove a count from changepoint for the removed observation
-    update_changepoint_sufficient_statistics!(changepoint_sufficient_stats, changepoint, update_type="remove")
+    update_changepoint_sufficient_statistics!(sufficient_stats, changepoint, update_type="remove")
     # remove counts corresponding to the disconnected segment
-    update_changepoint_sufficient_statistics!(changepoint_sufficient_stats, changepoint, new_changepoint_segment, 
+    update_changepoint_sufficient_statistics!(sufficient_stats, changepoint, new_changepoint_segment, 
                                               update_type="remove")
     datum = data[:, observation]
     # first, remove the observation data from the changepoint
-    update_data_sufficient_statistics!(data_sufficient_stats, changepoint, datum, changepoint_sufficient_stats, model, 
-                                       update_type="remove")
+    update_data_sufficient_statistics!(sufficient_stats, changepoint, datum, model, update_type="remove")
     # then, remove the data from the now separated latter half of the segment
-    update_data_sufficient_statistics!(data_sufficient_stats, changepoint, new_changepoint_data, 
-                                       changepoint_sufficient_stats, model, update_type="remove")
+    update_data_sufficient_statistics!(sufficient_stats, changepoint, new_changepoint_data, model, update_type="remove")
     # recompute the posterior parameters for the changepoints
-    compute_data_posterior_parameters!(changepoint, changepoint_sufficient_stats, data_sufficient_stats, 
-                                       model.data_parameters)
+    compute_data_posterior_parameters!(changepoint, sufficient_stats, model.data_parameters)
     # add counts for the new changepoint segment
     if new_changepoint <= n
-        update_changepoint_sufficient_statistics!(changepoint_sufficient_stats, new_changepoint, new_changepoint_segment, 
+        update_changepoint_sufficient_statistics!(sufficient_stats, new_changepoint, new_changepoint_segment, 
                                                   update_type="new")
         # add sufficient stats for the new segment
-        update_data_sufficient_statistics!(data_sufficient_stats, new_changepoint, new_changepoint_data, 
-                                           changepoint_sufficient_stats, model, update_type="new")
+        update_data_sufficient_statistics!(sufficient_stats, new_changepoint, new_changepoint_data, model, 
+                                           update_type="new")
         # recompute the posterior parameters for the changepoints
-        compute_data_posterior_parameters!(new_changepoint, changepoint_sufficient_stats, data_sufficient_stats, 
-                                           model.data_parameters)
-    end
-end
-
-function remove_observation!(observation::Int64, instances::Matrix{Int64}, iteration::Int64, data::Matrix{T}, 
-                             cluster_sufficient_stats::HmmSufficientStatistics,
-                             data_sufficient_stats::DataSufficientStatistics,
-                             data_parameters::DataParameters) where {T <: Real}
-    n = size(instances)[1]
-    if observation > 1
-        prev_cluster = instances[observation-1, iteration]
-    else
-        prev_cluster = n+1
-    end
-    cluster = instances[observation, iteration]
-    # n+1 indicates that the observation is assigned to no cluster, or the "null" cluster
-    null_cluster = n+1
-    instances[observation, iteration] = null_cluster
-    datum = vec(data[:, observation])
-    update_cluster_sufficient_statistics!(cluster_sufficient_stats, cluster, prev_cluster, update_type="remove")
-    update_data_sufficient_statistics!(data_sufficient_stats, cluster, datum, cluster_sufficient_stats, data_parameters, 
-                                       update_type="remove")
-    compute_data_posterior_parameters!(cluster, cluster_sufficient_stats, data_sufficient_stats, data_parameters)
-    if cluster === observation && sum(cluster_sufficient_stats.num_observations[:, cluster]) > 0
-        cluster = update_cluster_birth_time_remove!(cluster, iteration, instances, cluster_sufficient_stats, 
-                                                    data_sufficient_stats, data_parameters)
-    end
-    # Update book keeping for the next observation over
-    if observation < n
-        next_observation = observation + 1
-        next_cluster = instances[next_observation, iteration]
-        update_cluster_sufficient_statistics!(cluster_sufficient_stats, next_cluster, cluster, update_type="remove")
-        update_cluster_sufficient_statistics!(cluster_sufficient_stats, next_cluster, null_cluster, update_type="add")
+        compute_data_posterior_parameters!(new_changepoint, sufficient_stats, model.data_parameters)
     end
 end
 
 function update_cluster_birth_time_add!(cluster::Int64, observation::Int64, iteration::Int64, instances::Matrix{Int64}, 
-                                        cluster_sufficient_stats::ClusterSufficientStatistics,
-                                        data_sufficient_stats::DataSufficientStatistics, 
-                                        data_parameters::DataParameters)
+                                        sufficient_stats::SufficientStatistics, data_parameters::DataParameters)
     assigned_to_cluster = (instances[:, iteration] .=== cluster)
     old_cluster_time = cluster
     cluster = observation
     instances[assigned_to_cluster, iteration] .= cluster
-    update_cluster_stats_new_birth_time!(cluster_sufficient_stats, cluster, old_cluster_time)
-    update_data_stats_new_birth_time!(data_sufficient_stats, cluster, old_cluster_time, data_parameters)
+    update_cluster_stats_new_birth_time!(sufficient_stats.cluster, cluster, old_cluster_time)
+    update_data_stats_new_birth_time!(sufficient_stats.data, cluster, old_cluster_time, data_parameters)
     return cluster
 end
 
 function add_observation!(observation::Int64, cluster::Int64, instances::Matrix{Int64}, iteration::Int64, 
-                          data::Matrix{T}, cluster_sufficient_stats::MixtureSufficientStatistics,
-                          data_sufficient_stats::DataSufficientStatistics, 
-                          model::Mixture) where {T <: Real}
+                          data::Matrix{T}, sufficient_stats::SufficientStatistics, model::Mixture) where {T <: Real}
     if observation < cluster
-        cluster = update_cluster_birth_time_add!(cluster, observation, iteration, instances, cluster_sufficient_stats,
-                                                 data_sufficient_stats, model.data_parameters)
+        cluster = update_cluster_birth_time_add!(cluster, observation, iteration, instances, sufficient_stats,
+                                                 model.data_parameters)
     end
     instances[observation, iteration] = cluster
     datum = vec(data[:, observation])
-    update_cluster_sufficient_statistics!(cluster_sufficient_stats, cluster, update_type="add")
-    update_data_sufficient_statistics!(data_sufficient_stats, cluster, datum, cluster_sufficient_stats, model, 
-                                       update_type="add")
-    compute_data_posterior_parameters!(cluster, cluster_sufficient_stats, data_sufficient_stats, model.data_parameters)
+    update_cluster_sufficient_statistics!(sufficient_stats, cluster, update_type="add")
+    update_data_sufficient_statistics!(sufficient_stats, cluster, datum, model, update_type="add")
+    compute_data_posterior_parameters!(cluster, sufficient_stats, model.data_parameters)
 end
 
 function add_observation!(observation::Int64, changepoint::Int64, instances::Matrix{Int64}, iteration::Int64,
-                          data::Matrix{T}, changepoint_sufficient_stats::ChangepointSufficientStatistics,
-                          data_sufficient_stats::DataSufficientStatistics, model::Changepoint) where {T <: Real}
+                          data::Matrix{T}, sufficient_stats::SufficientStatistics,
+                          model::Changepoint) where {T <: Real}
     if observation < changepoint
-        @assertion sum(changepoint_sufficient_stats.num_observations[observation:(changepoint-1)]) === 0
+        @assertion sum(sufficient_stats.cluster.num_observations[observation:(changepoint-1)]) === 0
         changepoint = update_cluster_birth_time_add!(changepoint, observation, iteration, instances, 
-                                                     changepoint_sufficient_stats, data_sufficient_stats, 
-                                                     model.data_parameters)
+                                                     sufficient_stats, model.data_parameters)
     else
-        @assertion sum(changepoint_sufficient_stats.num_observations[(changepoint+1):observation]) === 0
+        @assertion sum(sufficient_stats.cluster.num_observations[(changepoint+1):observation]) === 0
     end
     instances[observation, iteration] = changepoint
-    update_changepoint_sufficient_statistics!(changepoint_sufficient_stats, changepoint, update_type="add")
+    update_changepoint_sufficient_statistics!(sufficient_stats, changepoint, update_type="add")
     datum = vec(data[:, observation])
-    update_data_sufficient_statistics!(data_sufficient_stats, changepoint, datum, changepoint_sufficient_stats,
-                                       model, update_type="add")
-    compute_data_posterior_parameters!(changepoint, changepoint_sufficient_stats, data_sufficient_stats, 
-                                       model.data_parameters)
-end
-
-function add_observation!(observation::Int64, changepoints::Vector{Int64}, instances::Matrix{Int64}, iteration::Int64,
-                          data::Matrix{T}, changepoint_sufficient_stats::ChangepointSufficientStatistics,
-                          data_sufficient_stats::DataSufficientStatistics, model::Changepoint) where {T <: Real}
-    @assertion length(changepoints) === 2
-
-    first_changepoint = minimum(changepoints)
-    last_changepoint = maximum(changepoints)
-
-    @assertion sum(changepoint_sufficient_stats.num_observation[first_changepoint+1:last_changepoint-1]) === 0
-    @assertion observation in first_changepoint+1:last_changepoint-1
-
-    assigned_to_last_changepoint = (instances[:, iteration] === last_changepoint)
-    instances[observation, iteration] = first_changepoint
-    instances[assigned_to_last_changepoint, iteration] = first_changepoint
-    # add a count for the new observation
-    update_changepoint_sufficient_statistics!(changepoint_sufficient_stats, first_changepoint, update_type="add")
-    # add counts for the merged changepoint
-    update_changepoint_sufficient_statistics!(changepoint_sufficient_stats, first_changepoint, 
-                                              assigned_to_last_changepoint, update_type="add")
-    datum = vec(data[:, observation])
-    last_changepoint_data = data[assigned_to_last_changepoint, observation]
-    # update data sufficient statistics for the new observation
-    update_data_sufficient_statistics!(data_sufficient_stats, first_changepoint, datum, changepoint_sufficient_stats,
-                                       model, update_type="add")
-    # update data sufficient statistics for the merged changepoint                                 
-    update_data_sufficient_statistics!(data_sufficient_stats, first_changepoint, last_changepoint_data, 
-                                       changepoint_sufficient_stats, model, update_type="add")
-    # update data sufficient statistics for the first changepoint
-    compute_data_posterior_parameters!(first_changepoint, changepoint_sufficient_stats, data_sufficient_stats, 
-                                       model.data_parameters)
-end
-
-function add_observation!(observation::Int64, cluster::Int64, instances::Matrix{Int64}, iteration::Int64, 
-                          data::Matrix{T}, cluster_sufficient_stats::HmmSufficientStatistics,
-                          data_sufficient_stats::DataSufficientStatistics, 
-                          data_parameters::DataParameters) where {T <: Real}
-    if observation < cluster
-        cluster = update_cluster_birth_time_add!(cluster, observation, iteration, instances, cluster_sufficient_stats,
-                                                 data_sufficient_stats, data_parameters)
-    end
-    n = size(instances)[1]
-    if observation > 1
-        prev_cluster = instances[observation-1, iteration]
-    else
-        prev_cluster = n+1 
-    end
-    instances[observation, iteration] = cluster
-    datum = vec(data[:, observation])
-    update_cluster_sufficient_statistics!(cluster_sufficient_stats, cluster, prev_cluster, update_type="add")
-    update_data_sufficient_statistics!(data_sufficient_stats, cluster, datum, cluster_sufficient_stats, data_parameters, 
-                                       update_type="add")
-    compute_data_posterior_parameters!(cluster, cluster_sufficient_stats, data_sufficient_stats, data_parameters)
-    # Update book keeping of the next observation over
-    if observation < n
-        next_observation = observation + 1
-        next_cluster = instances[next_observation, iteration]
-        null_cluster = n+1
-        update_cluster_sufficient_statistics!(cluster_sufficient_stats, next_cluster, null_cluster, update_type="remove")
-        update_cluster_sufficient_statistics!(cluster_sufficient_stats, next_cluster, cluster, update_type="add")
-    end
+    update_data_sufficient_statistics!(sufficient_stats, changepoint, datum, model, update_type="add")
+    compute_data_posterior_parameters!(changepoint, sufficient_stats, model.data_parameters)
 end
 
 function compute_arrival_distribution_posterior(cluster_sufficient_stats::ClusterSufficientStatistics,
-                                                cluster_parameters::ParametricArrivalsClusterParameters{T}) where {T <: GeometricArrivals}
+                                                cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
+                                                {T <: GeometricArrivals}
     n = length(cluster_sufficient_stats.clusters)
     num_clusters = length(get_clusters(cluster_sufficient_stats))
     phi_posterior = deepcopy(cluster_parameters.arrival_distribution.prior)
@@ -767,7 +555,8 @@ function compute_arrival_distribution_posterior(cluster_sufficient_stats::Cluste
 end
 
 function compute_arrival_distribution_posterior(changepoint_sufficient_stats::ChangepointSufficientStatistics,
-                                                changepoint_parameters::ParametricArrivalsClusterParameters{T}) where {T <: GeometricArrivals}
+                                                changepoint_parameters::ParametricArrivalsClusterParameters{T}) where 
+                                                {T <: GeometricArrivals}
     n = length(changepoint_sufficient_stats.changepoints)
     num_changepoints = length(get_changepoints(changepoint_sufficient_stats))
     phi_posterior = deepcopy(changepoint_parameters.arrival_distribution.prior)
@@ -787,25 +576,29 @@ function existing_cluster_log_predictive(cluster_sufficient_stats::ChangepointSu
 end
 
 function new_cluster_log_predictive(cluster_sufficient_stats::Union{MixtureSufficientStatistics, ChangepointSufficientStatistics},
-                                    cluster_parameters::ParametricArrivalsClusterParameters{T}) where {T <: GeometricArrivals} 
+                                    cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
+                                    {T <: GeometricArrivals} 
     phi_posterior = compute_arrival_distribution_posterior(cluster_sufficient_stats, cluster_parameters)
     return log(phi_posterior[1]) - log(sum(phi_posterior))
 end
 
 function existing_cluster_log_predictive(cluster_sufficient_stats::ChangepointSufficientStatistics,
-                                         cluster_parameters::ParametricArrivalsClusterParameters{T}, ::Int64) where {T <: GeometricArrivals}
+                                         cluster_parameters::ParametricArrivalsClusterParameters{T}, ::Int64) where 
+                                         {T <: GeometricArrivals}
     phi_posterior = compute_arrival_distribution_posterior(cluster_sufficient_stats, cluster_parameters)
     return log(phi_posterior[2]) - log(sum(phi_posterior))
 end
 
 function existing_cluster_log_predictive(cluster_sufficient_stats::MixtureSufficientStatistics,
-                                         cluster_parameters::ParametricArrivalsClusterParameters{T}) where {T <: GeometricArrivals}
+                                         cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
+                                         {T <: GeometricArrivals}
     phi_posterior = compute_arrival_distribution_posterior(cluster_sufficient_stats, cluster_parameters)
     return log(phi_posterior[2]) - log(sum(phi_posterior))
 end
 
 function new_cluster_log_predictive(cluster_sufficient_stats::MixtureSufficientStatistics,
-                                    cluster_parameters::ParametricArrivalsClusterParameters{T}) where {T <: PitmanYorArrivals}
+                                    cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
+                                    {T <: PitmanYorArrivals}
     n = length(cluster_sufficient_stats.clusters)
     num_clusters = count(cluster_sufficient_stats.clusters)
     tau = cluster_parameters.arrival_distribution.tau
@@ -814,7 +607,8 @@ function new_cluster_log_predictive(cluster_sufficient_stats::MixtureSufficientS
 end
 
 function existing_cluster_log_predictive(cluster_sufficient_stats::MixtureSufficientStatistics,
-                                         cluster_parameters::ParametricArrivalsClusterParameters{T}) where {T <: PitmanYorArrivals}
+                                         cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
+                                         {T <: PitmanYorArrivals}
     n = length(cluster_sufficient_stats.clusters)
     num_clusters = count(cluster_sufficient_stats.clusters)
     tau = cluster_parameters.arrival_distribution.tau
@@ -822,7 +616,6 @@ function existing_cluster_log_predictive(cluster_sufficient_stats::MixtureSuffic
     return log(n - num_clusters*tau) - log(n + theta)
 end
 
-# TODO: make a version of this for HMMs
 function compute_num_complement(cluster::Int64, cluster_num_observations::Vector{Int64}; 
                                 missing_observation::Union{Int64, Nothing}=nothing)
     younger_clusters = 1:(cluster-1)
@@ -960,11 +753,10 @@ function compute_existing_cluster_log_predictives(::Int64, clusters::Vector{Int6
     return log_weights
 end
 
-function compute_data_posterior_parameters!(cluster::Int64, cluster_sufficient_stats::ClusterSufficientStatistics,
-                                            data_sufficient_stats::GaussianSufficientStatistics,
+function compute_data_posterior_parameters!(cluster::Int64, sufficient_stats::SufficientStatistics,
                                             data_parameters::GaussianParameters)
-    data_mean = vec(data_sufficient_stats.data_means[:, cluster])
-    n = cluster_sufficient_stats.num_observations[cluster]
+    data_mean = vec(sufficient_stats.data.data_means[:, cluster])
+    n = sufficient_stats.cluster.num_observations[cluster]
     dim = length(data_mean)
     prior_mean = data_parameters.prior_mean
     prior_cov = data_parameters.prior_covariance
@@ -977,17 +769,15 @@ function compute_data_posterior_parameters!(cluster::Int64, cluster_sufficient_s
         posterior_mean = prior_mean
         cov = prior_cov
     end
-    data_sufficient_stats.posterior_means[:, cluster] = vec(posterior_mean)
-    data_sufficient_stats.posterior_covs[:, cluster] = vec(cov)
+    sufficient_stats.data.posterior_means[:, cluster] = vec(posterior_mean)
+    sufficient_stats.data.posterior_covs[:, cluster] = vec(cov)
 end
 
-function compute_data_posterior_parameters!(cluster::Int64, 
-                                            ::Union{MixtureSufficientStatistics, ChangepointSufficientStatistics},
-                                            data_sufficient_stats::MultinomialSufficientStatistics,
+function compute_data_posterior_parameters!(cluster::Int64, sufficient_stats::SufficientStatistics,
                                             data_parameters::MultinomialParameters)
-    cluster_counts = data_sufficient_stats.total_counts[:, cluster]
+    cluster_counts = sufficient_stats.data.total_counts[:, cluster]
     prior_dirichlet_scale = data_parameters.prior_dirichlet_scale
-    data_sufficient_stats.posterior_dirichlet_scale[:, cluster] = cluster_counts + prior_dirichlet_scale 
+    sufficient_stats.data.posterior_dirichlet_scale[:, cluster] = cluster_counts + prior_dirichlet_scale 
 end
 
 function data_log_predictive(datum::Vector{Float64}, cluster::Int64, 
@@ -1040,12 +830,11 @@ function get_changepoints(changepoint_sufficient_stats::ChangepointSufficientSta
     return Vector{Int64}(changepoints)
 end
 
-function gibbs_move(observation::Int64, data::Matrix{T}, cluster_sufficient_stats::MixtureSufficientStatistics, 
-                    data_sufficient_stats::DataSufficientStatistics, 
-                    model::Union{Mixture, HiddenMarkovModel}) where {T <: Real}
+function gibbs_move(observation::Int64, data::Matrix{T}, sufficient_stats::SufficientStatistics, model::Mixture) where 
+                   {T <: Real}
     data_parameters = model.data_parameters
     cluster_parameters = model.cluster_parameters
-    clusters = get_clusters(cluster_sufficient_stats)
+    clusters = get_clusters(sufficient_stats.cluster)
     num_clusters = length(clusters)
 
     choices = Array{Int64}(undef, num_clusters+1)
@@ -1054,20 +843,20 @@ function gibbs_move(observation::Int64, data::Matrix{T}, cluster_sufficient_stat
 
     weights = Array{Float64}(undef, num_clusters+1)
     weights[1:num_clusters] = compute_existing_cluster_log_predictives(observation, clusters, 
-                                                                       cluster_sufficient_stats, cluster_parameters)
-    weights[num_clusters+1] = new_cluster_log_predictive(cluster_sufficient_stats, cluster_parameters)
-    weights += compute_data_log_predictives(observation, choices, data, data_sufficient_stats, data_parameters)
+                                                                       sufficient_stats.cluster, cluster_parameters)
+    weights[num_clusters+1] = new_cluster_log_predictive(sufficient_stats.cluster, cluster_parameters)
+    weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
 
     return gumbel_max(choices, weights)
 end
 
-function gibbs_move(observation::Int64, data::Matrix{T}, changepoint_sufficient_stats::ChangepointSufficientStatistics,
-                    data_sufficient_stats::DataSufficientStatistics, model::Changepoint) where {T <: Real}
+function gibbs_move(observation::Int64, data::Matrix{T}, sufficient_stats::SufficientStatistics,
+                    model::Changepoint) where {T <: Real}
     data_parameters = model.data_parameters
     changepoint_parameters = model.changepoint_parameters
     n = size(data)[2]
 
-    changepoints = get_changepoints(changepoint_sufficient_stats, observation)
+    changepoints = get_changepoints(sufficient_stats.cluster, observation)
     num_changepoints = length(changepoints)
 
     choices = Array{Int64}(undef, num_changepoints+1)
@@ -1076,29 +865,18 @@ function gibbs_move(observation::Int64, data::Matrix{T}, changepoint_sufficient_
 
     weights = Array{Float64}(undef, num_changepoints+1)
     for (index, changepoint) in enumerate(changepoints)
-        weights[index] = existing_cluster_log_predictive(changepoint_sufficient_stats, model.changepoint_parameters, 
+        weights[index] = existing_cluster_log_predictive(sufficient_stats.cluster, model.changepoint_parameters, 
                                                          changepoint)
     end
-    weights[num_changepoints+1] = new_cluster_log_predictive(changepoint_sufficient_stats, model.changepoint_parameters)
-    weights += compute_data_log_predictives(observation, choices, data, data_sufficient_stats, data_parameters)
+    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats.cluster, model.changepoint_parameters)
+    weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
 
     return gumbel_max(choices, weights)
 end
 
-function propose(observation::Int64, ::Int64, data::Matrix{T}, cluster_sufficient_stats::MixtureSufficientStatistics,
-                 data_sufficient_stats::DataSufficientStatistics, model::Model) where {T <: Real}
-    return gibbs_move(observation, data, cluster_sufficient_stats, data_sufficient_stats, model)    
-end
-
-function propose(observation::Int64, prev_cluster::Int64, data::Matrix{T}, 
-                 cluster_sufficient_stats::HmmSufficientStatistics, data_sufficient_stats::DataSufficientStatistics, 
+function propose(observation::Int64, ::Int64, data::Matrix{T}, sufficient_stats::SufficientStatistics,
                  model::Model) where {T <: Real}
-    n = length(data)[1]
-    num_observations = cluster_sufficient_stats.num_observations[prev_cluster, :]
-    clusters = cluster_sufficient_stats.clusters
-    state_cluster_sufficient_stats = prepare_cluster_sufficient_statistics(model.cluster_parameters, num_observations, 
-                                                                           clusters)
-    return gibbs_move(observation, data, state_cluster_sufficient_stats, data_sufficient_stats, model)
+    return gibbs_move(observation, data, sufficient_stats, model)    
 end
 
 end
