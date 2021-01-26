@@ -8,6 +8,8 @@ export ClusterSufficientStatistics, DataSufficientStatistics
 export NtlSufficientStatistics, GaussianSufficientStatistics, MultinomialParameters
 export HmmSufficientStatistics, NtlHmmSufficientStatistics, MixtureSufficientStatistics
 export ChangepointSufficientStatistics, NtlChangepointSufficientStatistics, Changepoint
+export BetaNtlParameters, BetaNtlSufficientStatistics, ParametricArrivalsClusterParameters
+export PitmanYorArrivals
 
 abstract type DataParameters end
 
@@ -60,18 +62,33 @@ struct GeometricArrivals <: ArrivalDistribution
     prior::Vector{Float64}
 end
 
-struct DirichletProcessArrivals <: ArrivalDistribution
-    beta::Float64
-    alpha::Float64
-    
+struct PitmanYorArrivals <: ArrivalDistribution
+    tau::Float64
+    theta::Float64
+    function PitmanYorArrivals(tau::Float64, theta::Float64)
+        if tau < 0 || tau > 1
+            error("tau must be in (0,1)")
+        end
+        if theta <= -tau
+            error("theta must be greater than -tau")
+        end
+        return new(tau, theta)
+    end
 end
 
-abstract type ClusterParameters end
+abstract type ParametricArrivalsClusterParameters{T<:ArrivalDistribution} end
 
-struct NtlParameters{T<:ArrivalDistribution} <: ClusterParameters
+struct NtlParameters{T<:ArrivalDistribution} <: ParametricArrivalsClusterParameters{T}
     prior::Vector{Float64}
     arrival_distribution::T
 end
+
+struct BetaNtlParameters{T<:ArrivalDistribution} <: ParametricArrivalsClusterParameters{T}
+    alpha::Float64
+    arrival_distribution::T
+end
+
+abstract type ClusterParameters end
 
 struct DpParameters <: ClusterParameters
     beta::Float64
@@ -86,14 +103,7 @@ end
 
 abstract type ClusterSufficientStatistics end
 
-abstract type MixtureSufficientStatistics <: ClusterSufficientStatistics end
-
-struct NtlSufficientStatistics <: MixtureSufficientStatistics
-    num_observations::Vector{Int64}
-    clusters::BitArray
-end
-
-struct DpSufficientStatistics <: MixtureSufficientStatistics
+struct MixtureSufficientStatistics <: ClusterSufficientStatistics
     num_observations::Vector{Int64}
     clusters::BitArray
 end
@@ -152,7 +162,7 @@ abstract type Model end
 
 abstract type ClusteringModel end
 
-struct Mixture{C<:ClusterParameters, D<:DataParameters} <: Model
+struct Mixture{C<:Union{ClusterParameters, ParametricArrivalsClusterParameters}, D<:DataParameters} <: Model
     cluster_parameters::C
     data_parameters::D
 end
