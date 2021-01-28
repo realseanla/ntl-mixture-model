@@ -7,7 +7,7 @@ abstract type Sampler end
 struct GibbsSampler <: Sampler
     num_iterations::Int64
     burn_in::Int64
-    function GibbsSampler(num_iterations::Int64, burn_in::Int64)
+    function GibbsSampler(;num_iterations::Int64=1000, burn_in::Int64=0)
         if num_iterations < 1
             error("Number of iterations should be positive.")
         end
@@ -16,7 +16,7 @@ struct GibbsSampler <: Sampler
         end
         return new(num_iterations, burn_in)
     end
-    function GibbsSampler(num_iterations::Int64)
+    function GibbsSampler(;num_iterations::Int64=1000)
         return new(num_iterations, 0)
     end
 end
@@ -24,7 +24,9 @@ end
 struct SequentialMonteCarlo <: Sampler
     num_particles::Int64
     ess_threshold::Float64
-    function SequentialMonteCarlo(num_particles::Int64, ess_threshold::T) where {T <: Real}
+    resample_at_end::Bool
+    function SequentialMonteCarlo(;num_particles::Int64=1000, ess_threshold::T=0.5, resample_at_end::Bool=false) where 
+                                  {T <: Real}
         if num_particles < 1
             error("Number of particles should be positive.")
         end
@@ -37,7 +39,7 @@ struct SequentialMonteCarlo <: Sampler
         if ess_threshold < 1
             ess_threshold = num_particles*ess_threshold
         end
-        return new(num_particles, ess_threshold)
+        return new(num_particles, ess_threshold, resample_at_end)
     end
 end
 

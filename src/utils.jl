@@ -65,6 +65,7 @@ function compute_normalized_weights(log_weights)
     max_value = maximum(log_weights)
     scaled_weights = exp.(log_weights .- max_value .+ log(num_weights))
     normalized_weights = scaled_weights ./ sum(scaled_weights)
+    normalized_weights[isnan.(normalized_weights)] .= 0
     return normalized_weights
 end
 
