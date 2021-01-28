@@ -62,15 +62,8 @@ function gibbs_sample!(observation, instances, iteration, data, sufficient_stats
     n = size(data)[2]
     remove_observation!(observation, instances, iteration, data, sufficient_stats, model)
     previous_state = (observation > 1) ? instances[observation-1, iteration] : n+1
-    if observation < n
-        next_state = instances[observation+1, iteration]
-        next_state_first = !any(instances[1:observation, iteration] .=== next_state)
-    else 
-        next_state = n+1
-        next_state_first = false
-    end
-    (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model, previous_state, next_state, 
-                                       next_state_first)
+    next_state = (observation < n) ? instances[observation+1, iteration] : n+1
+    (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model, previous_state, next_state)
     add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model, 
                      update_next_cluster=true)
 end
@@ -95,7 +88,7 @@ function gibbs_proposal(observation::Int64, data::Matrix{T}, sufficient_stats::S
     return gumbel_max(choices, weights)
 end
 
-function gibbs_proposal(observation, data, sufficient_stats, model, previous_state, next_state, next_state_first)
+function gibbs_proposal(observation, data, sufficient_stats, model, previous_state, next_state)
     clusters = get_clusters(sufficient_stats.cluster)
     num_clusters = length(clusters)
 
@@ -115,13 +108,13 @@ function gibbs_proposal(observation, data, sufficient_stats, model, previous_sta
                                                                            model.cluster_parameters)
         weights[num_clusters+1] = new_cluster_log_predictive(previous_state_sufficient_stats, model.cluster_parameters)
     end
-    @assert !any(isnan.(weights))
+    @assertion !any(isnan.(weights))
     # Add contribution from transitioning into next state 
     if next_state !== n+1
         for (index, choice) = enumerate(choices)
             choice_num_obs = sufficient_stats.cluster.state_num_observations[choice, :]
             choice_sufficient_stats = MixtureSufficientStatistics(choice_num_obs, sufficient_stats.cluster.clusters)
-            if next_state_first 
+            if next_state === observation+1
                 weights[index] += new_cluster_log_predictive(choice_sufficient_stats, model.cluster_parameters)
             else
                 weights[index] += reshape(compute_existing_cluster_log_predictives(observation, [next_state], 
@@ -130,10 +123,10 @@ function gibbs_proposal(observation, data, sufficient_stats, model, previous_sta
             end
         end
     end
-    @assert !any(isnan.(weights))
+    @assertion !any(isnan.(weights))
     # Add contribution from data
     weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, model.data_parameters)
-    @assert !any(isnan.(weights))
+    @assertion !any(isnan.(weights))
 
     return gumbel_max(choices, weights)
 end
