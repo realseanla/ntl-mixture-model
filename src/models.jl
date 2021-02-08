@@ -7,10 +7,13 @@ export DataParameters, GaussianParameters, MultinomialParameters
 export ClusterSufficientStatistics, DataSufficientStatistics
 export NtlSufficientStatistics, GaussianSufficientStatistics, MultinomialParameters
 export HmmSufficientStatistics, MixtureSufficientStatistics
+export StationaryHmmSufficientStatistics, NonstationaryHmmSufficientStatistics
 export ChangepointSufficientStatistics, Changepoint
 export BetaNtlParameters, BetaNtlSufficientStatistics, ParametricArrivalsClusterParameters
 export PitmanYorArrivals
 export SufficientStatistics
+
+using SparseArrays
 
 abstract type DataParameters end
 
@@ -112,9 +115,21 @@ struct MixtureSufficientStatistics <: ClusterSufficientStatistics
     clusters::BitArray
 end
 
-mutable struct HmmSufficientStatistics <: ClusterSufficientStatistics
+
+abstract type HmmSufficientStatistics <: ClusterSufficientStatistics end
+
+# Stationary HMM
+mutable struct StationaryHmmSufficientStatistics <: HmmSufficientStatistics
     num_observations::Vector{Int64}
     state_num_observations::Matrix{Int64}
+    clusters::BitArray
+end
+
+# Nonstationary HMM
+mutable struct NonstationaryHmmSufficientStatistics <: HmmSufficientStatistics
+    num_observations::Vector{Int64}
+    state_num_observations::Matrix{Int64}
+    state_assignments::Vector{SparseMatrixCSC}
     clusters::BitArray
 end
 
