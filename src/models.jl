@@ -157,6 +157,7 @@ struct MultinomialSufficientStatistics <: DataSufficientStatistics
 end
 
 struct SufficientStatistics{C<:ClusterSufficientStatistics, D<:DataSufficientStatistics}
+    n::Int
     cluster::C
     data::D
 end
