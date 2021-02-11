@@ -563,13 +563,15 @@ function new_cluster_log_predictive(::SufficientStatistics, cluster_parameters::
 end
 
 function new_cluster_log_predictive(sufficient_stats::SufficientStatistics, cluster_parameters::DpParameters, changepoint)
-    denominator = sufficient_stats.cluster.num_observations[changepoint] + cluster_parameters.alpha + cluster_parameters.beta
+    num_obs = maximum([sufficient_stats.cluster.num_observations[changepoint] - 1, 0])
+    denominator = num_obs + cluster_parameters.alpha + cluster_parameters.beta
     return log(cluster_parameters.alpha) - log(denominator)
 end
 
 function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics,
                                          cluster_parameters::DpParameters, changepoint::Int64)
-    numerator = sufficient_stats.cluster.num_observations[changepoint] + cluster_parameters.beta
+    num_obs = maximum([sufficient_stats.cluster.num_observations[changepoint] - 1, 0])
+    numerator = num_obs + cluster_parameters.beta
     return log(numerator) - log(numerator + cluster_parameters.alpha)
 end
 
@@ -580,9 +582,10 @@ function new_cluster_log_predictive(sufficient_stats::SufficientStatistics,
     return log(phi_posterior[1]) - log(sum(phi_posterior))
 end
 
-function new_cluster_log_predictive(::SufficientStatistics, ::ParametricArrivalsClusterParameters{T}, changepoint) where 
+function new_cluster_log_predictive(sufficient_stats::SufficientStatistics, 
+                                    cluster_parameters::ParametricArrivalsClusterParameters{T}, ::Int64) where 
                                     {T <: GeometricArrivals}
-    return 0
+    return new_cluster_log_predictive(sufficient_stats, cluster_parameters)
 end
 
 function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics,
@@ -876,7 +879,7 @@ function gibbs_move(observation::Int64, data::Matrix{T}, sufficient_stats::Suffi
     return gumbel_max(choices, weights)
 end
 
-function gibbs_move(observation, data, sufficient_stats, model::Changepoint)
+function gibbs_move(observation, data, sufficient_stats, model::Changepoint{C, D}) where {C <: DpParameters, D}
     data_parameters = model.data_parameters
     changepoint_parameters = model.changepoint_parameters
     n = sufficient_stats.n
@@ -897,12 +900,54 @@ function gibbs_move(observation, data, sufficient_stats, model::Changepoint)
     choices[num_changepoints+1] = observation
     weights = Array{Float64}(undef, length(choices))
 
-    weights[1:num_changepoints+1] .= new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
-                                                                oldest_changepoint)
-    for (index, changepoint) in enumerate(changepoints) 
-        weights[index] += existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoint) 
+    if observation > 1 && observation < n
+        weights[1:num_changepoints+1] .= new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
+                                                                    oldest_changepoint)
+        for (index, changepoint) in enumerate(changepoints) 
+            weights[index] += existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
+                                                              changepoint) 
+        end
+        weights[num_changepoints+1] += new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
+                                                                  observation)
+        weights[end] = merge_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoints)
+    elseif observation === 1
+        @assertion length(choices) === 2
+        weights[1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, observation)
+        weights[2] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, newest_changepoint)
+    elseif observation === n
+        @assertion length(choices) === 2
+        weights[1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, oldest_changepoint)
+        weights[2] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, oldest_changepoint)
     end
-    weights[num_changepoints+1] += new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, observation)
+
+    weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
+
+    return gumbel_max(choices, weights)
+end
+
+function gibbs_move(observation, data, sufficient_stats, model::Changepoint{C, D}) where {C <: NtlParameters, D}
+    data_parameters = model.data_parameters
+    changepoint_parameters = model.changepoint_parameters
+    n = sufficient_stats.n
+
+    changepoints = get_changepoints(sufficient_stats, observation)
+    num_changepoints = length(changepoints)
+
+    if observation > 1 && observation < n
+        choices = Array{Int64}(undef, num_changepoints+2)
+        choices[end] = n+1
+    else
+        choices = Array{Int64}(undef, num_changepoints+1)
+    end
+
+    choices[1:num_changepoints] = changepoints
+    choices[num_changepoints+1] = observation
+    weights = Array{Float64}(undef, length(choices))
+
+    for (index, changepoint) in enumerate(changepoints) 
+        weights[index] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoint) 
+    end
+    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, observation)
 
     if observation > 1 && observation < n
         weights[end] = merge_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoints)
