@@ -562,9 +562,15 @@ function new_cluster_log_predictive(::SufficientStatistics, cluster_parameters::
     return log(cluster_parameters.alpha)
 end
 
+function new_cluster_log_predictive(sufficient_stats::SufficientStatistics, cluster_parameters::DpParameters, changepoint)
+    denominator = sufficient_stats.cluster.num_observations[changepoint] + cluster_parameters.alpha + cluster_parameters.beta
+    return log(cluster_parameters.alpha) - log(denominator)
+end
+
 function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics,
                                          cluster_parameters::DpParameters, changepoint::Int64)
-    return log(sufficient_stats.cluster.num_observations[changepoint] - 1 + cluster_parameters.beta)
+    numerator = sufficient_stats.cluster.num_observations[changepoint] + cluster_parameters.beta
+    return log(numerator) - log(numerator + cluster_parameters.alpha)
 end
 
 function new_cluster_log_predictive(sufficient_stats::SufficientStatistics,
@@ -572,6 +578,11 @@ function new_cluster_log_predictive(sufficient_stats::SufficientStatistics,
                                     {T <: GeometricArrivals} 
     phi_posterior = compute_arrival_distribution_posterior(sufficient_stats, cluster_parameters)
     return log(phi_posterior[1]) - log(sum(phi_posterior))
+end
+
+function new_cluster_log_predictive(::SufficientStatistics, ::ParametricArrivalsClusterParameters{T}, changepoint) where 
+                                    {T <: GeometricArrivals}
+    return 0
 end
 
 function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics,
@@ -608,11 +619,23 @@ function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics,
     return log(n - num_clusters*tau) - log(n + theta)
 end
 
-function merge_cluster_log_predictive(sufficient_stats, cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
-                                      {T <: GeometricArrivals}
+function merge_cluster_log_predictive(sufficient_stats, cluster_parameters::ParametricArrivalsClusterParameters{T},
+                                      ::Vector{Int64}) where {T <: GeometricArrivals}
     phi_posterior = compute_arrival_distribution_posterior(sufficient_stats, cluster_parameters)
     new_phi_posterior = phi_posterior + Vector{Int64}([-1., 1.])
     return logbeta(new_phi_posterior) - logbeta(phi_posterior)
+end
+
+function merge_cluster_log_predictive(sufficient_stats, cluster_parameters::DpParameters, clusters::Vector{Int64})
+    @assertion length(clusters) === 2
+    beta = cluster_parameters.beta
+    alpha = cluster_parameters.alpha
+    cluster1_num_obs = sufficient_stats.cluster.num_observations[clusters[1]]
+    cluster2_num_obs = sufficient_stats.cluster.num_observations[clusters[2]]
+    total_num_obs = cluster1_num_obs + cluster2_num_obs
+    log_numerator = logbeta(total_num_obs + 1 + beta, alpha)
+    log_denominator = logbeta(cluster1_num_obs + beta, alpha) + logbeta(cluster2_num_obs + beta, alpha)
+    return log_numerator - log_denominator 
 end
 
 function compute_num_complement(cluster::Int64, cluster_num_observations::Vector{Int64}; 
@@ -858,28 +881,32 @@ function gibbs_move(observation, data, sufficient_stats, model::Changepoint)
     n = sufficient_stats.n
 
     changepoints = get_changepoints(sufficient_stats, observation)
+    oldest_changepoint = minimum(changepoints)
+    newest_changepoint = maximum(changepoints)
     num_changepoints = length(changepoints)
 
     if observation > 1 && observation < n
         choices = Array{Int64}(undef, num_changepoints+2)
-        choices[1:num_changepoints] = changepoints
-        choices[num_changepoints+1] = observation
         choices[end] = n+1
-        weights = Array{Float64}(undef, num_changepoints+2)
     else
         choices = Array{Int64}(undef, num_changepoints+1)
-        choices[1:num_changepoints] = changepoints
-        choices[num_changepoints+1] = observation
-        weights = Array{Float64}(undef, num_changepoints+1)
     end
-    for (index, changepoint) in enumerate(changepoints)
-        weights[index] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
-                                                         changepoint)
+
+    choices[1:num_changepoints] = changepoints
+    choices[num_changepoints+1] = observation
+    weights = Array{Float64}(undef, length(choices))
+
+    weights[1:num_changepoints+1] .= new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
+                                                                oldest_changepoint)
+    for (index, changepoint) in enumerate(changepoints) 
+        weights[index] += existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoint) 
     end
-    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters)
+    weights[num_changepoints+1] += new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, observation)
+
     if observation > 1 && observation < n
-        weights[end] = merge_cluster_log_predictive(sufficient_stats, model.changepoint_parameters)
+        weights[end] = merge_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoints)
     end
+
     weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
 
     return gumbel_max(choices, weights)
