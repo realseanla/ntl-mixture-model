@@ -582,6 +582,16 @@ function new_cluster_log_predictive(sufficient_stats::SufficientStatistics,
     return log(phi_posterior[1]) - log(sum(phi_posterior))
 end
 
+function new_cluster_log_predictive(sufficient_stats::SufficientStatistics, cluster_parameters::NtlParameters{T},
+                                    observation::Int64) where {T <: GeometricArrivals}
+    phi_posterior = compute_arrival_distribution_posterior(sufficient_stats, cluster_parameters)
+    num_complement = compute_num_complement(observation, sufficient_stats.cluster.num_observations)
+    psi_posterior = deepcopy(cluster_parameters.prior)
+    psi_posterior[2] += num_complement
+    log_predictive = log(phi_posterior[1]) - log(sum(phi_posterior)) + logbeta(psi_posterior)
+    return log_predictive
+end
+
 function new_cluster_log_predictive(sufficient_stats::SufficientStatistics, 
                                     cluster_parameters::ParametricArrivalsClusterParameters{T}, ::Int64) where 
                                     {T <: GeometricArrivals}
@@ -873,7 +883,7 @@ function gibbs_move(observation::Int64, data::Matrix{T}, sufficient_stats::Suffi
     weights = Array{Float64}(undef, num_clusters+1)
     weights[1:num_clusters] = compute_existing_cluster_log_predictives(observation, clusters, 
                                                                        sufficient_stats, cluster_parameters)
-    weights[num_clusters+1] = new_cluster_log_predictive(sufficient_stats, cluster_parameters)
+    weights[num_clusters+1] = new_cluster_log_predictive(sufficient_stats, cluster_parameters, observation)
     weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
 
     return gumbel_max(choices, weights)
