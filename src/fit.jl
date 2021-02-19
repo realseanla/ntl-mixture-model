@@ -605,12 +605,11 @@ function update_cluster_stats_new_birth_time!(cluster_sufficient_stats::Stationa
     # TODO: fix this cheap hack
     n = length(cluster_sufficient_stats.clusters)
     clusters = get_clusters(cluster_sufficient_stats)
+    append!(clusters, n+1)
     for cluster = clusters
         cluster_sufficient_stats.state_num_observations[cluster, new_time] = cluster_sufficient_stats.state_num_observations[cluster, old_time]
         cluster_sufficient_stats.state_num_observations[cluster, old_time] = 0
     end
-    cluster_sufficient_stats.state_num_observations[n+1, new_time] = cluster_sufficient_stats.state_num_observations[n+1, old_time]
-    cluster_sufficient_stats.state_num_observations[n+1, old_time] = 0
     
     cluster_sufficient_stats.num_observations[new_time] = cluster_sufficient_stats.num_observations[old_time]
     cluster_sufficient_stats.num_observations[old_time] = 0
