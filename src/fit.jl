@@ -558,11 +558,18 @@ function compute_arrival_distribution_posterior(sufficient_stats::SufficientStat
     return phi_posterior
 end
 
-function new_cluster_log_predictive(::SufficientStatistics, cluster_parameters::DpParameters)
+function new_cluster_log_predictive(::SufficientStatistics{C, D}, cluster_parameters::DpParameters) where 
+                                   {C <: MixtureSufficientStatistics, D}
     return log(cluster_parameters.alpha)
 end
 
-function new_cluster_log_predictive(sufficient_stats::SufficientStatistics, cluster_parameters::DpParameters, changepoint)
+function new_cluster_log_predictive(sufficient_stats::SufficientStatistics{C, D}, cluster_parameters::DpParameters, 
+                                    ::Int64) where {C <: MixtureSufficientStatistics, D}
+    return new_cluster_log_predictive(sufficient_stats, cluster_parameters)
+end
+
+function new_cluster_log_predictive(sufficient_stats::SufficientStatistics{C, D}, cluster_parameters::DpParameters, 
+                                    changepoint) where {C <: ChangepointSufficientStatistics, D}
     num_obs = maximum([sufficient_stats.cluster.num_observations[changepoint] - 1, 0])
     denominator = num_obs + cluster_parameters.alpha + cluster_parameters.beta
     return log(cluster_parameters.alpha) - log(denominator)
@@ -599,34 +606,34 @@ function new_cluster_log_predictive(sufficient_stats::SufficientStatistics,
 end
 
 function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics,
-                                         cluster_parameters::ParametricArrivalsClusterParameters{T}, ::Int64) where 
-                                         {T <: GeometricArrivals}
-    phi_posterior = compute_arrival_distribution_posterior(sufficient_stats, cluster_parameters)
-    return log(phi_posterior[2]) - log(sum(phi_posterior))
-end
-
-function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics,
                                          cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
                                          {T <: GeometricArrivals}
     phi_posterior = compute_arrival_distribution_posterior(sufficient_stats, cluster_parameters)
     return log(phi_posterior[2]) - log(sum(phi_posterior))
 end
 
+function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics,
+                                         cluster_parameters::ParametricArrivalsClusterParameters{T}, ::Int64) where 
+                                         {T <: GeometricArrivals}
+    return existing_cluster_log_predictive(sufficient_stats, cluster_parameters)
+end
+
+
 function new_cluster_log_predictive(sufficient_stats::SufficientStatistics,
-                                    cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
+                                    cluster_parameters::ParametricArrivalsClusterParameters{T}, observation) where 
                                     {T <: PitmanYorArrivals}
     n = sufficient_stats.n
-    num_clusters = count(sufficient_stats.cluster.clusters)
+    num_clusters = count(sufficient_stats.cluster.clusters[1:observation])
     tau = cluster_parameters.arrival_distribution.tau
     theta = cluster_parameters.arrival_distribution.theta
     return log(theta + num_clusters*tau) - log(n + theta)
 end
 
 function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics,
-                                         cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
+                                         cluster_parameters::ParametricArrivalsClusterParameters{T}, observation) where 
                                          {T <: PitmanYorArrivals}
     n = sufficient_stats.n
-    num_clusters = count(sufficient_stats.cluster.clusters)
+    num_clusters = count(sufficient_stats.cluster.clusters[1:observation])
     tau = cluster_parameters.arrival_distribution.tau
     theta = cluster_parameters.arrival_distribution.theta
     return log(n - num_clusters*tau) - log(n + theta)
@@ -768,7 +775,7 @@ function compute_existing_cluster_log_predictives(observation::Int64, clusters::
                                                   sufficient_stats::SufficientStatistics, 
                                                   cluster_parameters::ParametricArrivalsClusterParameters)
     log_weights = compute_cluster_log_predictives(observation, clusters, sufficient_stats, cluster_parameters)
-    log_weights .+= existing_cluster_log_predictive(sufficient_stats, cluster_parameters)
+    log_weights .+= existing_cluster_log_predictive(sufficient_stats, cluster_parameters, observation)
     return log_weights
 end
 
@@ -777,14 +784,14 @@ function compute_existing_cluster_log_predictives(::Int64, clusters::Vector{Int6
     return log_weights
 end
 
-function compute_existing_cluster_log_predictives(::Int64, clusters::Vector{Int64},
+function compute_existing_cluster_log_predictives(observation::Int64, clusters::Vector{Int64},
                                                   sufficient_stats::SufficientStatistics, 
                                                   beta_ntl_parameters::BetaNtlParameters)
     n = sufficient_stats.n
-    num_clusters = count(sufficient_stats.cluster.clusters)
+    num_clusters = count(sufficient_stats.cluster.clusters[1:observation])
     log_weights = log.(sufficient_stats.cluster.num_observations[clusters] .- beta_ntl_parameters.alpha)
     log_weights .-= log(n - num_clusters*beta_ntl_parameters.alpha)
-    log_weights .+= existing_cluster_log_predictive(sufficient_stats, beta_ntl_parameters)
+    log_weights .+= existing_cluster_log_predictive(sufficient_stats, beta_ntl_parameters, observation)
     return log_weights
 end
 
