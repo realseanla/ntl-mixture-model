@@ -14,6 +14,7 @@ using Distributions
 using LinearAlgebra
 using Statistics
 using ProgressBars
+using SparseArrays
 
 asserting() = true # when set to true, this will enable all `@assertion`s
 
@@ -255,7 +256,7 @@ function prepare_cluster_sufficient_statistics(::Mixture, n::Int64)
     return cluster_sufficient_stats
 end
 
-function prepare_cluster_sufficient_statistics(::HiddenMarkovModel, n)
+function prepare_cluster_sufficient_statistics(::HiddenMarkovModel{C, D}, n) where {C <: BetaNtlParameters, D}
     num_observations = Vector{Int64}(zeros(Int64, n))
     # The null state is represented as n+1
     state_num_observations = Matrix{Int64}(zeros(Int64, n+1, n))
@@ -267,10 +268,10 @@ end
 function prepare_cluster_sufficient_statistics(::HiddenMarkovModel{C, D}, n) where {C <: NtlParameters, D}
     num_observations = Vector{Int64}(zeros(Int64, n))
     state_num_observations = Matrix{Int64}(zeros(Int64, n+1, n))
-    state_assignments = Vector{SparseMatrixCSC}(undef, n)
+    state_assignments = Vector{SparseMatrixCSC}(undef, n+1)
     # TODO: this might need to be modified to account for null state n+1
-    for i = 1:n
-        state_assignments[i] = spzeros(n, n)
+    for i = 1:(n+1)
+        state_assignments[i] = spzeros(Int64, n+1, n+1)
     end
     clusters = BitArray(undef, n)
     clusters .= false
@@ -528,6 +529,9 @@ function update_cluster_sufficient_statistics!(sufficient_stats::SufficientStati
         message = "$update_type is not a supported update type."
         throw(ArgumentError(message))
     end
+    @assert sufficient_stats.cluster.state_num_observations[source_cluster, cluster] >= 0
+    @assert sufficient_stats.cluster.num_observations[cluster] >= 0
+    @assert sufficient_stats.cluster.state_assignments[source_cluster][observation, cluster] >= 0
 end
 
 function update_changepoint_sufficient_statistics!(sufficient_stats::SufficientStatistics, changepoint::Int64; 
@@ -620,20 +624,35 @@ function update_cluster_stats_new_birth_time!(cluster_sufficient_stats::Stationa
 end
 
 function update_cluster_stats_new_birth_time!(cluster_sufficient_stats::NonstationaryHmmSufficientStatistics, new_time, old_time)
-    num_obs = cluster_sufficient_stats.state_num_observations[old_time, :]
+    num_obs = deepcopy(cluster_sufficient_stats.state_num_observations[old_time, :])
     cluster_sufficient_stats.state_num_observations[new_time, :] = num_obs 
     cluster_sufficient_stats.state_num_observations[old_time, :] .= 0
+    # Modify the state assignments
+    cluster_sufficient_stats.state_assignments[new_time][:, :] = deepcopy(cluster_sufficient_stats.state_assignments[old_time][:, :])
+    cluster_sufficient_stats.state_assignments[old_time][:, :] .= 0
+
     cluster_sufficient_stats.clusters[new_time] = true
     cluster_sufficient_stats.clusters[old_time] = false
+    # TODO: fix this cheap hack
+    n = length(cluster_sufficient_stats.clusters)
     clusters = get_clusters(cluster_sufficient_stats)
+    append!(clusters, n+1)
+    # Modify the state num observations
     for cluster = clusters
         cluster_sufficient_stats.state_num_observations[cluster, new_time] = cluster_sufficient_stats.state_num_observations[cluster, old_time]
         cluster_sufficient_stats.state_num_observations[cluster, old_time] = 0
+        old_time_state_assignments = deepcopy(cluster_sufficient_stats.state_assignments[cluster][:, old_time])
+        cluster_sufficient_stats.state_assignments[cluster][:, new_time] = old_time_state_assignments 
+        cluster_sufficient_stats.state_assignments[cluster][:, old_time] .= 0
+        @assert all(cluster_sufficient_stats.state_assignments[cluster][:, old_time] .=== 0) 
     end
     cluster_sufficient_stats.num_observations[new_time] = cluster_sufficient_stats.num_observations[old_time]
     cluster_sufficient_stats.num_observations[old_time] = 0
-    cluster_sufficient_stats.state_assignments[new_time] = cluster_sufficient_stats.state_assignments[old_time]
-    cluster_sufficient_stats.state_assignments[new_time] .= 0
+    @assert all(cluster_sufficient_stats.state_num_observations[old_time, :] .=== 0)
+    @assert all(cluster_sufficient_stats.state_num_observations[:, old_time] .=== 0)
+    @assert any(cluster_sufficient_stats.state_num_observations[:, new_time] .> 0)
+    @assert any(cluster_sufficient_stats.state_assignments[new_time][:, :] .> 0)
+    @assert all(cluster_sufficient_stats.state_assignments[old_time][:, :] .=== 0)
 end
 
 function update_data_stats_new_birth_time!(data_sufficient_stats::GaussianSufficientStatistics, 
@@ -701,8 +720,8 @@ function remove_observation!(observation::Int64, instances::Matrix{Int64}, itera
     # Update cluster book keeping for the next cluster over
     if observation < n
         next_cluster = instances[observation+1, iteration]
-        update_cluster_sufficient_statistics!(sufficient_stats, next_cluster, cluster, observation, update_type="remove")
-        update_cluster_sufficient_statistics!(sufficient_stats, next_cluster, n+1, observation, update_type="add")
+        update_cluster_sufficient_statistics!(sufficient_stats, next_cluster, cluster, observation+1, update_type="remove")
+        update_cluster_sufficient_statistics!(sufficient_stats, next_cluster, n+1, observation+1, update_type="add")
     end
     datum = vec(data[:, observation])
     update_data_sufficient_statistics!(sufficient_stats, cluster, datum, model, update_type="remove")
@@ -782,8 +801,8 @@ function add_observation!(observation, cluster, instances, iteration, data, suff
     # Update cluster book keeping for the next observation over
     if update_next_cluster && observation < n 
         next_cluster = instances[observation+1, iteration]
-        update_cluster_sufficient_statistics!(sufficient_stats, next_cluster, n+1, observation, update_type="remove")
-        update_cluster_sufficient_statistics!(sufficient_stats, next_cluster, cluster, observation, update_type="add")
+        update_cluster_sufficient_statistics!(sufficient_stats, next_cluster, n+1, observation+1, update_type="remove")
+        update_cluster_sufficient_statistics!(sufficient_stats, next_cluster, cluster, observation+1, update_type="add")
     end
     datum = vec(data[:, observation])
     update_data_sufficient_statistics!(sufficient_stats, cluster, datum, model, update_type="add")
@@ -893,9 +912,9 @@ end
 
 function compute_num_complement(cluster, previous_state, hmm_sufficient_stats::NonstationaryHmmSufficientStatistics)
     num_complement = 0
-    state_observations = hmm_sufficient_stats.state_assignments[previous_state]
+    state_assignments = hmm_sufficient_stats.state_assignments[previous_state]
     for older_cluster=1:(cluster-1)
-        num_complement += sum(state_observations[cluster:end, older_cluster]) 
+        num_complement += sum(state_assignments[cluster:end-1, older_cluster]) 
     end
     return num_complement
 end
@@ -920,7 +939,7 @@ function compute_stick_breaking_posterior(cluster, prev_cluster, hmm_sufficient_
                                           ntl_parameters)
     posterior = deepcopy(ntl_parameters.prior)
     # TODO: fix this, this isn't entirely correct
-    posterior[1] += hmm_sufficient_stats.cluster_num_observations[prev_cluster, cluster] - 1
+    posterior[1] += hmm_sufficient_stats.state_num_observations[prev_cluster, cluster] - 1
     if posterior[1] < 0
         posterior[1] += 1
     end
@@ -928,7 +947,7 @@ function compute_stick_breaking_posterior(cluster, prev_cluster, hmm_sufficient_
     return posterior
 end
 
-function compute_cluster_log_predictives(observation, clusters::Vector{Int64}, 
+function compute_cluster_log_predictives(observation::Int64, clusters::Vector{Int64}, 
                                          ntl_sufficient_stats::MixtureSufficientStatistics, ntl_parameters::NtlParameters)
     # Not strictly the number of observations
     num_clusters = length(clusters)
@@ -1014,10 +1033,10 @@ function compute_cluster_log_predictives(observation, clusters::Vector{Int64},
 end
 
 # TODO: check correctness of this algorithm
-function compute_cluster_log_predictives(observation, clusters::Vector{Int64}, previous_cluster, 
-                                         cluster_sufficient_stats::NonstationaryHmmSufficientStatistics, 
-                                         cluster_parameters::NtlParameters)
+function compute_cluster_log_predictives(observation::Int64, clusters::Vector{Int64}, previous_cluster::Int64, 
+                                         cluster_sufficient_stats, cluster_parameters::NtlParameters)
     # Not strictly the number of observations
+    ntl_sufficient_stats = cluster_sufficient_stats.cluster
     num_clusters = length(clusters)
     log_weights = Vector{Float64}(undef, num_clusters)
     n = maximum(clusters)
@@ -1026,14 +1045,14 @@ function compute_cluster_log_predictives(observation, clusters::Vector{Int64}, p
     complement_log_weights = zeros(Float64, n)
     psi_parameters = Array{Int64}(undef, 2, n, n)
     logbetas = Array{Float64}(undef, n, n)
-    new_num_complement = compute_num_complement(observation, previous_cluster, cluster_sufficient_stats)
+    new_num_complement = compute_num_complement(observation, previous_cluster, ntl_sufficient_stats)
     younger_cluster_new_psi = Array{Float64}(undef, 2)
     cluster_new_psi = Array{Float64}(undef, 2)
 
     for source_cluster = clusters
         for cluster = clusters
             if cluster > 1
-                cluster_psi = compute_stick_breaking_posterior(cluster, ntl_sufficient_stats, ntl_parameters) 
+                cluster_psi = compute_stick_breaking_posterior(cluster, source_cluster, ntl_sufficient_stats, cluster_parameters) 
                 psi_parameters[:, cluster, source_cluster] = cluster_psi
                 log_denom = log(sum(cluster_psi))
                 if source_cluster === previous_cluster
@@ -1060,7 +1079,7 @@ function compute_cluster_log_predictives(observation, clusters::Vector{Int64}, p
             log_weights[i] = log_weight
         else # observation < cluster
             cluster_num_obs = ntl_sufficient_stats.num_observations[cluster]
-            cluster_old_psi = psi_parameters[:, cluster]
+            cluster_old_psi = psi_parameters[:, cluster, previous_cluster]
 
             # Clusters younger than the observation
             younger_clusters = (observation+1):(cluster-1)
@@ -1120,12 +1139,19 @@ function compute_existing_cluster_log_predictives(observation::Int64, clusters::
     return log_weights
 end
 
-function compute_existing_cluster_log_predictives(observation::Int64, clusters, previous_cluster,
+function compute_existing_cluster_log_predictives(observation::Int64, clusters::Vector{Int64}, previous_cluster::Int64,
                                                   cluster_sufficient_stats, cluster_parameters::NtlParameters)
     log_weights = compute_cluster_log_predictives(observation, clusters, previous_cluster, cluster_sufficient_stats, 
                                                   cluster_parameters)
-    log_weights .+= existing_cluster_log_predictive(cluster_sufficient_stats, cluster_parameters)
+    log_weights .+= existing_cluster_log_predictive(cluster_sufficient_stats.cluster, cluster_parameters)
     return log_weights
+end
+
+# HMM
+function compute_existing_cluster_log_predictives(observation::Int64, cluster::Int64, previous_cluster::Int64,
+                                                  cluster_sufficient_stats, cluster_parameters)
+    return reshape(compute_existing_cluster_log_predictives(observation, [cluster], previous_cluster, cluster_sufficient_stats,
+                                                            cluster_parameters), 1)[1]
 end
 
 function compute_existing_cluster_log_predictives(::Int64, clusters::Vector{Int64},
@@ -1155,9 +1181,10 @@ function compute_existing_cluster_log_predictives(observation::Int64, cluster::I
     return reshape(result, 1)[1]
 end
 
-function compute_existing_cluster_log_predictives(observation::Int64, clusters, previous_cluster::Int64,
-                                                  cluster_sufficient_stats, cluster_parameters)
-
+function compute_existing_cluster_log_predictives(observation::Int64, clusters::Vector{Int64}, previous_cluster::Int64,
+                                                  cluster_sufficient_stats, 
+                                                  cluster_parameters::BetaNtlParameters{A}) where 
+                                                  {A <: PitmanYorArrivals}
     previous_cluster_num_obs = cluster_sufficient_stats.cluster.state_num_observations[previous_cluster, :]
     previous_cluster_sufficient_stats = MixtureSufficientStatistics(previous_cluster_num_obs, 
                                                                     cluster_sufficient_stats.cluster.clusters)

@@ -24,7 +24,7 @@ function changepoint_test(;n=10, iterations=10)
     results = Ntl.Fitter.fit(data, changepoint_model, gibbs_sampler)
 end
 
-function hmm_test(;n=10, iterations=10)
+function dp_hmm_test(;n=10, iterations=10)
     Random.seed!(1)
     
     data_covariance = Matrix{Float64}(0.1I, 2, 2)
@@ -45,6 +45,28 @@ function hmm_test(;n=10, iterations=10)
     dp_parameters = Ntl.Models.BetaNtlParameters(0., dp_arrivals)
     gibbs_sampler = Ntl.Samplers.GibbsSampler(num_iterations=iterations)
     hmm_model = Ntl.Models.HiddenMarkovModel(dp_parameters, data_parameters)
+    markov_chain = Ntl.Fitter.fit(data, hmm_model, gibbs_sampler)
+end
+
+function ntl_hmm_test(;n=10, iterations=10)
+    Random.seed!(1)
+    
+    data_covariance = Matrix{Float64}(0.1I, 2, 2)
+    prior_covariance = Matrix{Float64}(I, 2, 2)
+    prior_mean = Vector{Float64}(zeros(2))
+    data_parameters = Ntl.Models.GaussianParameters(data_covariance, prior_mean, prior_covariance)
+    
+    psi_prior = Vector{Float64}([1, 1])
+    phi_prior = Vector{Float64}([1, 1])
+    geometric_arrival = Ntl.Models.GeometricArrivals(phi_prior)
+    ntl_cluster_parameters = Ntl.Models.NtlParameters(psi_prior, geometric_arrival)
+    
+    mixture_model = Ntl.Models.Mixture(ntl_cluster_parameters, data_parameters)
+    mixture = Ntl.Generate.generate(mixture_model, n=n)
+    data = Matrix(transpose(mixture[:, 2:end]))
+
+    gibbs_sampler = Ntl.Samplers.GibbsSampler(num_iterations=iterations)
+    hmm_model = Ntl.Models.HiddenMarkovModel(ntl_cluster_parameters, data_parameters)
     markov_chain = Ntl.Fitter.fit(data, hmm_model, gibbs_sampler)
 end
 
