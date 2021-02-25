@@ -591,12 +591,10 @@ end
 
 function new_cluster_log_predictive(sufficient_stats::SufficientStatistics, cluster_parameters::NtlParameters{T},
                                     observation::Int64) where {T <: GeometricArrivals}
-    phi_posterior = compute_arrival_distribution_posterior(sufficient_stats, cluster_parameters)
     num_complement = compute_num_complement(observation, sufficient_stats.cluster.num_observations)
     psi_posterior = deepcopy(cluster_parameters.prior)
     psi_posterior[2] += num_complement
-    log_predictive = log(phi_posterior[1]) - log(sum(phi_posterior)) + logbeta(psi_posterior)
-    return log_predictive
+    return new_cluster_log_predictive(sufficient_stats, cluster_parameters) + logbeta(psi_posterior)
 end
 
 function new_cluster_log_predictive(sufficient_stats::SufficientStatistics, 
