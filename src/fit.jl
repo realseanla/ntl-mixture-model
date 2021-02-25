@@ -150,7 +150,17 @@ function gibbs_proposal(observation::Int64, data::Matrix{T}, sufficient_stats::S
     return gumbel_max(choices, weights)
 end
 
-function fit(data::Matrix{T}, model::Mixture, sampler::SequentialMonteCarlo) where {T <: Real}
+function propose(observation, data, particles, particle, sufficient_stats, model::Mixture)
+    return gibbs_proposal(observation, data, sufficient_stats, model)
+end
+
+function propose(observation, data, particles, particle, sufficient_stats, model::HiddenMarkovModel)
+    previous_state = particles[observation-1, particle]
+    next_state = size(data)[2] + 1
+    return gibbs_proposal(observation, data, sufficient_stats, model, previous_state, next_state)
+end
+
+function fit(data, model, sampler::SequentialMonteCarlo)
     num_particles = sampler.num_particles
     ess_threshold = sampler.ess_threshold
     resample_at_end = sampler.resample_at_end
@@ -176,7 +186,7 @@ function fit(data::Matrix{T}, model::Mixture, sampler::SequentialMonteCarlo) whe
         for particle = 1:num_particles
             sufficient_stats = sufficient_stats_array[particle]
 
-            (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model)
+            (cluster, weight) = propose(observation, data, particles, particle, sufficient_stats, model)
 
             add_observation!(observation, cluster, particles, particle, data, sufficient_stats, model)
 
@@ -361,13 +371,20 @@ function compute_joint_log_likelihood(sufficient_stats::SufficientStatistics, mo
 end
 
 function compute_log_weight!(log_weights::Vector{Float64}, log_likelihoods::Vector{Float64}, 
-                             proposal_log_weight::Float64, sufficient_stats::SufficientStatistics, 
-                             model::Model, particle::Int64)
+                             proposal_log_weight::Float64, sufficient_stats::SufficientStatistics,
+                             model::Mixture, particle::Int64)
     previous_log_weight = log_weights[particle]
     previous_log_likelihood = log_likelihoods[particle]
     log_likelihood = compute_joint_log_likelihood(sufficient_stats, model)
     log_weights[particle] = previous_log_weight + log_likelihood - previous_log_likelihood - proposal_log_weight
     log_likelihoods[particle] = log_likelihood
+end
+
+function compute_log_weight!(log_weights::Vector{Float64}, log_likelihoods::Vector{Float64}, 
+                             proposal_log_weight::Float64, sufficient_stats::SufficientStatistics,
+                             model::HiddenMarkovModel, particle::Int64)
+    log_weights[particle] = 1
+    log_likelihoods[particle] = 0
 end
 
 function update_data_sufficient_statistics!(sufficient_stats::SufficientStatistics{C,D}, cluster::Int64, 
