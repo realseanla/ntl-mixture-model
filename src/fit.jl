@@ -941,6 +941,7 @@ function compute_stick_breaking_posterior(cluster::Int64, num_observations::Vect
     posterior = deepcopy(beta_prior)
     posterior[1] += num_observations[cluster] - 1
     posterior[2] += compute_num_complement(cluster, num_observations, missing_observation=missing_observation)
+    posterior[posterior .=== 0.] .= 1
     return posterior
 end
 
@@ -955,12 +956,12 @@ end
 function compute_stick_breaking_posterior(cluster, prev_cluster, hmm_sufficient_stats::NonstationaryHmmSufficientStatistics,
                                           ntl_parameters)
     posterior = deepcopy(ntl_parameters.prior)
-    # TODO: fix this, this isn't entirely correct
-    posterior[1] += hmm_sufficient_stats.state_num_observations[prev_cluster, cluster] - 1
-    if posterior[1] < 0
-        posterior[1] += 1
+    posterior[1] += hmm_sufficient_stats.state_num_observations[prev_cluster, cluster] - 1.
+    if posterior[1] < 0.
+        posterior[1] += 1.
     end
     posterior[2] += compute_num_complement(cluster, prev_cluster, hmm_sufficient_stats)
+    posterior[posterior .=== 0.] .= 1.
     return posterior
 end
 
@@ -1049,9 +1050,11 @@ function compute_cluster_log_predictives(observation::Int64, clusters::Vector{In
     return log_weights
 end
 
-# TODO: check correctness of this algorithm
+# Note: this only computes the cluster log predictice for the older clusters, younger cluster log predictives
+# are too computationally inefficient to compute
 function compute_cluster_log_predictives(observation::Int64, clusters::Vector{Int64}, previous_cluster::Int64, 
                                          cluster_sufficient_stats, cluster_parameters::NtlParameters)
+    @assertion all(clusters .< observation)
     # Not strictly the number of observations
     ntl_sufficient_stats = cluster_sufficient_stats.cluster
     num_clusters = length(clusters)
@@ -1060,84 +1063,24 @@ function compute_cluster_log_predictives(observation::Int64, clusters::Vector{In
     n = maximum([n, observation])
     cluster_log_weights = zeros(Float64, n)
     complement_log_weights = zeros(Float64, n)
-    psi_parameters = Array{Int64}(undef, 2, n, n)
-    logbetas = Array{Float64}(undef, n, n)
-    new_num_complement = compute_num_complement(observation, previous_cluster, ntl_sufficient_stats)
-    younger_cluster_new_psi = Array{Float64}(undef, 2)
-    cluster_new_psi = Array{Float64}(undef, 2)
 
-    for source_cluster = clusters
-        for cluster = clusters
-            if cluster > 1
-                cluster_psi = compute_stick_breaking_posterior(cluster, source_cluster, ntl_sufficient_stats, cluster_parameters) 
-                psi_parameters[:, cluster, source_cluster] = cluster_psi
-                log_denom = log(sum(cluster_psi))
-                if source_cluster === previous_cluster
-                    cluster_log_weights[cluster] = log(cluster_psi[1]) - log_denom
-                    complement_log_weights[cluster] = log(cluster_psi[2]) - log_denom
-                end
-                if observation < cluster
-                    # TODO: Refactor to access in column major order
-                    logbetas[source_cluster, cluster] = logbeta(cluster_psi)
-                end
-            end
+    for cluster = clusters
+        if cluster > 1
+            cluster_psi = compute_stick_breaking_posterior(cluster, previous_cluster, ntl_sufficient_stats, cluster_parameters) 
+            log_denom = log(sum(cluster_psi))
+            cluster_log_weights[cluster] = log(cluster_psi[1]) - log_denom
+            complement_log_weights[cluster] = log(cluster_psi[2]) - log_denom
         end
     end
-
     for (i, cluster) = enumerate(clusters)
-        if cluster < observation
-            log_weight = 0
-            if cluster > 1
-                log_weight += cluster_log_weights[cluster]
-            end
-            # Clusters younger than the current cluster
-            younger_clusters = (cluster+1):(observation-1)
-            log_weight += sum(complement_log_weights[younger_clusters])
-            log_weights[i] = log_weight
-        else # observation < cluster
-            cluster_num_obs = ntl_sufficient_stats.num_observations[cluster]
-            cluster_old_psi = psi_parameters[:, cluster, previous_cluster]
-
-            # Clusters younger than the observation
-            younger_clusters = (observation+1):(cluster-1)
-            younger_clusters = younger_clusters[ntl_sufficient_stats.num_observations[younger_clusters] .> 0]
-
-            if ntl_sufficient_stats.num_observations[1] === 0
-                youngest_cluster = 2
-            else
-                youngest_cluster = 1
-            end
-
-            log_weight = 0
-            for source_cluster = clusters
-                younger_clusters_log_weight = 0
-                for younger_cluster = younger_clusters
-                    younger_cluster_old_psi = psi_parameters[:, younger_cluster, source_cluster]
-                    younger_cluster_new_psi[1] = younger_cluster_old_psi[1]
-                    younger_cluster_new_psi[2] = younger_cluster_old_psi[2]
-                    if observation === 1 && younger_cluster === youngest_cluster
-                        younger_cluster_new_psi[1] = cluster_num_obs + 1 
-                        younger_cluster_old_psi = cluster_old_psi
-                    else
-                        younger_cluster_new_psi[1] += cluster_num_obs
-                    end
-                    new_a = younger_cluster_new_psi[1]
-                    new_b = younger_cluster_new_psi[2]
-                    younger_clusters_log_weight += logbeta(new_a, new_b) - logbetas[younger_cluster, source_cluster]
-                end
-
-                if observation > youngest_cluster
-                    cluster_new_psi[1] = cluster_old_psi[1] + 1
-                    cluster_new_psi[2] = new_num_complement + 1
-                    new = cluster_new_psi
-                    cluster_log_weight = logbeta(new[1], new[2]) - logbetas[cluster, source_cluster]
-                    log_weight += cluster_log_weight + younger_clusters_log_weight
-                else
-                    log_weight += younger_clusters_log_weight
-                end
-            end
-            log_weights[i] = log_weight
+        log_weight = 0.
+        if cluster > 1
+            log_weight += cluster_log_weights[cluster]
         end
+        # Clusters younger than the current cluster
+        younger_clusters = (cluster+1):(observation-1)
+        log_weight += sum(complement_log_weights[younger_clusters])
+        log_weights[i] = log_weight
     end
     return log_weights
 end
