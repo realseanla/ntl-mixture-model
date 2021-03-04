@@ -53,11 +53,9 @@ function gibbs_sample!(observation, instances, iteration, data, sufficient_stats
 end
 
 function gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model::Changepoint)
-    if observation in [1,size(data)[2]] || (instances[observation-1, iteration] !== instances[observation+1, iteration])
-        remove_observation!(observation, instances, iteration, data, sufficient_stats, model)
-        (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model)
-        add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model)
-    end
+    remove_observation!(observation, instances, iteration, data, sufficient_stats, model)
+    (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model)
+    add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model)
 end
 
 function gibbs_proposal(observation::Int64, data::Matrix{T}, sufficient_stats::SufficientStatistics, 
@@ -80,29 +78,84 @@ function gibbs_proposal(observation::Int64, data::Matrix{T}, sufficient_stats::S
     return gumbel_max(choices, weights)
 end
 
-function gibbs_proposal(observation::Int64, data::Matrix{T}, sufficient_stats::SufficientStatistics,
-                        model::Changepoint) where {T<:Real}
+function gibbs_proposal(observation, data, sufficient_stats, model::Changepoint{C, D}) where {C <: DpParameters, D}
     data_parameters = model.data_parameters
     changepoint_parameters = model.changepoint_parameters
-    n = size(data)[2]
+    n = sufficient_stats.n
 
     changepoints = get_changepoints(sufficient_stats, observation)
+    oldest_changepoint = minimum(changepoints)
+    newest_changepoint = maximum(changepoints)
     num_changepoints = length(changepoints)
 
-    choices = Array{Int64}(undef, num_changepoints+1)
-    choices[1:num_changepoints] = changepoints
-    choices[end] = observation
-
-    weights = Array{Float64}(undef, num_changepoints+1)
-    for (index, changepoint) in enumerate(changepoints)
-        weights[index] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
-                                                         changepoint)
+    if observation > 1 && observation < n
+        choices = Array{Int64}(undef, num_changepoints+2)
+        choices[end] = n+1
+    else
+        choices = Array{Int64}(undef, num_changepoints+1)
     end
-    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, observation)
+
+    choices[1:num_changepoints] = changepoints
+    choices[num_changepoints+1] = observation
+    weights = Array{Float64}(undef, length(choices))
+
+    if observation > 1 && observation < n
+        weights[1:num_changepoints+1] .= new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
+                                                                    oldest_changepoint)
+        for (index, changepoint) in enumerate(changepoints) 
+            weights[index] += existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
+                                                              changepoint) 
+        end
+        weights[num_changepoints+1] += new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
+                                                                  observation)
+        weights[end] = merge_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoints)
+    elseif observation === 1
+        @assertion length(choices) === 2
+        weights[1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, observation)
+        weights[2] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, newest_changepoint)
+    elseif observation === n
+        @assertion length(choices) === 2
+        weights[1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, oldest_changepoint)
+        weights[2] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, oldest_changepoint)
+    end
+
     weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
 
     return gumbel_max(choices, weights)
 end
+
+function gibbs_proposal(observation, data, sufficient_stats, model::Changepoint{C, D}) where {C <: NtlParameters, D}
+    data_parameters = model.data_parameters
+    changepoint_parameters = model.changepoint_parameters
+    n = sufficient_stats.n
+
+    changepoints = get_changepoints(sufficient_stats, observation)
+    num_changepoints = length(changepoints)
+
+    if observation > 1 && observation < n
+        choices = Array{Int64}(undef, num_changepoints+2)
+        choices[end] = n+1
+    else
+        choices = Array{Int64}(undef, num_changepoints+1)
+    end
+
+    choices[1:num_changepoints] = changepoints
+    choices[num_changepoints+1] = observation
+    weights = Array{Float64}(undef, length(choices))
+
+    for (index, changepoint) in enumerate(changepoints) 
+        weights[index] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoint) 
+    end
+    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, observation)
+
+    if observation > 1 && observation < n
+        weights[end] = merge_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoints)
+    end
+
+    weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
+
+    return gumbel_max(choices, weights)
+end 
 
 function propose(observation, data, particles, particle, sufficient_stats, model::Mixture)
     return gibbs_proposal(observation, data, sufficient_stats, model)
