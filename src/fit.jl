@@ -161,6 +161,30 @@ function propose(observation, data, particles, particle, sufficient_stats, model
     return gibbs_proposal(observation, data, sufficient_stats, model)
 end
 
+function propose(observation, data, particles, particle, sufficient_stats, model::Changepoint)
+    data_parameters = model.data_parameters
+    changepoint_parameters = model.changepoint_parameters
+    n = sufficient_stats.n
+
+    changepoints = get_changepoints(sufficient_stats, observation)
+    num_changepoints = length(changepoints)
+
+    choices = Array{Int64}(undef, num_changepoints+1)
+
+    choices[1:num_changepoints] = changepoints
+    choices[num_changepoints+1] = observation
+    weights = Array{Float64}(undef, length(choices))
+
+    for (index, changepoint) in enumerate(changepoints) 
+        weights[index] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoint) 
+    end
+    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, observation)
+
+    weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
+
+    return gumbel_max(choices, weights)
+end
+
 function fit(data, model, sampler::SequentialMonteCarlo)
     num_particles = sampler.num_particles
     ess_threshold = sampler.ess_threshold
@@ -359,6 +383,11 @@ function compute_log_weight!(log_weights::Vector{Float64}, log_likelihoods::Vect
     log_likelihoods[particle] = log_likelihood
 end
 
+function compute_log_weight!(log_weights, log_likelihoods, proposal_log_weight, sufficient_stats, model::Changepoint,
+                             particle)
+    log_weights[particle] = proposal_log_weight
+    log_likelihoods[particle] = 1
+end
 
 function update_data_sufficient_statistics!(sufficient_stats::SufficientStatistics{C,D}, cluster::Int64, 
                                             datum::Vector{Float64}, model::Model;
@@ -992,8 +1021,11 @@ function get_changepoints(sufficient_stats::SufficientStatistics, observation::I
         append!(changepoints, first_changepoint)
     end
     if observation < n
-        last_changepoint = all_changepoints[findfirst(all_changepoints .> observation)]
-        append!(changepoints, last_changepoint)
+        last_changepoint_index = findfirst(all_changepoints .> observation)
+        if !isnothing(last_changepoint_index)
+            last_changepoint = all_changepoints[last_changepoint_index]
+            append!(changepoints, last_changepoint)
+        end
     end
     return Vector{Int64}(changepoints)
 end
