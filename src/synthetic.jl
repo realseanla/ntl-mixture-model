@@ -2,12 +2,12 @@ module Generate
 
 using ..Models: ClusterParameters, DataParameters, GaussianParameters, GeometricArrivals, NtlParameters
 using ..Models: ArrivalDistribution, MultinomialParameters
-using ..Models: Model, Mixture, Changepoint
+using ..Models: Model, Mixture, Changepoint, HiddenMarkovModel
 using Distributions
 using LinearAlgebra
 using DataFrames
 
-function generate_log_pmfs(psi_variates::Array{Float64})
+function generate_log_pmfs(psi_variates::Vector{Float64})
     num_clusters = length(psi_variates)
     complement_psi_variates = 1 .- psi_variates
     log_psi_variates = log.(psi_variates)
@@ -26,6 +26,15 @@ function generate_log_pmfs(psi_variates::Array{Float64})
     end
 
     return log_pmfs
+end
+
+function generate_log_pmfs(psi_variates::Matrix{Float64})
+    num_states = size(psi_variates)[1]
+    log_transition_matrices = Array{Float64}(undef, num_states, num_states, num_states)
+    for state = 1:num_states
+        log_transition_matrices[state, :, :] = generate_log_pmfs(vec(psi_variates[state, :]))
+    end
+    return log_transition_matrices
 end
 
 function sample_clusters(arrivals::Array{Int64}, model::Mixture)
@@ -60,7 +69,7 @@ function sample_clusters(arrivals::Array{Int64}, model::Mixture)
     return cluster_assignments 
 end
 
-function sample_clusters(arrivals::Array{Int64}, model::Changepoint)
+function sample_clusters(arrivals::Array{Int64}, ::Changepoint)
     n = length(arrivals)
     changepoint_assignments = Array{Int64}(undef, n)
     num_changepoints = sum(arrivals) 
@@ -78,6 +87,35 @@ function sample_clusters(arrivals::Array{Int64}, model::Changepoint)
     end
 
     return changepoint_assignments 
+end
+
+function sample_clusters(arrivals::Array{Int64}, model::HiddenMarkovModel)
+    cluster_parameters = model.cluster_parameters
+    n = length(arrivals)
+    cluster_assignments = Array{Int64}(undef, n)
+    num_clusters = sum(arrivals) 
+    new_cluster_indices = arrivals .=== 1
+    arrival_times = (1:n)[new_cluster_indices]
+    psi_prior = cluster_parameters.prior
+
+    psi_variates = rand(Beta(psi_prior[1], psi_prior[2]), num_clusters*num_clusters)
+    psi_variates_matrix = reshape(psi_variates, num_clusters, num_clusters) 
+    psi_variates_matrix[:, 1] .= 1 
+
+    log_pmfs = generate_log_pmfs(psi_variates_matrix)
+    pmfs = exp.(log_pmfs)
+
+    cluster_assignments[new_cluster_indices] = 1:num_clusters
+    for observation = 2:n
+        if !(observation in arrival_times)
+            previous_assignment = cluster_assignments[observation-1]
+            newest_state = maximum(cluster_assignments[1:observation-1])
+            pmf = vec(pmfs[previous_assignment, newest_state, :])
+            assignment = rand(Categorical(pmf), 1)[1]
+            cluster_assignments[observation] = assignment
+        end
+    end
+    return cluster_assignments 
 end
 
 function sample_cluster_parameters(num_clusters, data_parameters::GaussianParameters)
@@ -122,7 +160,7 @@ function prepare_data_matrix(::Type{T}, dim, n) where {T <: GaussianParameters}
     return Array{Float64}(undef, dim, n)
 end
 
-get_cluster_parameters(model::Mixture) = model.cluster_parameters
+get_cluster_parameters(model::Union{Mixture, HiddenMarkovModel}) = model.cluster_parameters
 get_cluster_parameters(model::Changepoint) = model.changepoint_parameters
 
 function generate(model::Model; n::Int64=100)

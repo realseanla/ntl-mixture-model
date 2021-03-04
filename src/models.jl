@@ -7,10 +7,13 @@ export DataParameters, GaussianParameters, MultinomialParameters
 export ClusterSufficientStatistics, DataSufficientStatistics
 export NtlSufficientStatistics, GaussianSufficientStatistics, MultinomialParameters
 export HmmSufficientStatistics, MixtureSufficientStatistics
+export StationaryHmmSufficientStatistics, NonstationaryHmmSufficientStatistics
 export ChangepointSufficientStatistics, Changepoint
 export BetaNtlParameters, BetaNtlSufficientStatistics, ParametricArrivalsClusterParameters
 export PitmanYorArrivals
 export SufficientStatistics
+
+using SparseArrays
 
 abstract type DataParameters end
 
@@ -66,7 +69,7 @@ end
 struct PitmanYorArrivals <: ArrivalDistribution
     tau::Float64
     theta::Float64
-    function PitmanYorArrivals(tau::Float64, theta::Float64)
+    function PitmanYorArrivals(;tau::Float64=0., theta::Float64=1.)
         if tau < 0 || tau > 1
             error("tau must be in (0,1)")
         end
@@ -87,6 +90,9 @@ end
 struct BetaNtlParameters{T<:ArrivalDistribution} <: ParametricArrivalsClusterParameters{T}
     alpha::Float64
     arrival_distribution::T
+    #function BetaNtlParameters{T}(arrival_distribution::T; alpha=0.) where {T<:ArrivalDistribution}
+    #    return new(alpha, arrival_distribution)
+    #end
 end
 
 abstract type ClusterParameters end
@@ -109,8 +115,21 @@ struct MixtureSufficientStatistics <: ClusterSufficientStatistics
     clusters::BitArray
 end
 
-mutable struct HmmSufficientStatistics <: ClusterSufficientStatistics
-    num_observations::Matrix{Int64}
+
+abstract type HmmSufficientStatistics <: ClusterSufficientStatistics end
+
+# Stationary HMM
+mutable struct StationaryHmmSufficientStatistics <: HmmSufficientStatistics
+    num_observations::Vector{Int64}
+    state_num_observations::Matrix{Int64}
+    clusters::BitArray
+end
+
+# Nonstationary HMM
+mutable struct NonstationaryHmmSufficientStatistics <: HmmSufficientStatistics
+    num_observations::Vector{Int64}
+    state_num_observations::Matrix{Int64}
+    state_assignments::Vector{SparseMatrixCSC}
     clusters::BitArray
 end
 
@@ -169,7 +188,7 @@ struct Mixture{C<:Union{ClusterParameters, ParametricArrivalsClusterParameters},
     data_parameters::D
 end
 
-struct HiddenMarkovModel{C<:ClusterParameters, D<:DataParameters} <: Model
+struct HiddenMarkovModel{C<:Union{ClusterParameters, ParametricArrivalsClusterParameters}, D<:DataParameters} <: Model
     cluster_parameters::C
     data_parameters::D
 end
