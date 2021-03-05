@@ -23,6 +23,16 @@ function plot_co_occurrence_matrix(markov_chain::Matrix{Int64})
         title="Co-occurrence Matrix")
 end
 
+function plot_co_occurrence_matrix(markov_chain::Matrix{Int64}, weights::Vector{Float64})
+    co_occurrence_matrix = compute_co_occurrence_matrix(markov_chain, weights)
+    gr()
+    heatmap(1:size(co_occurrence_matrix,1),
+        1:size(co_occurrence_matrix,2), co_occurrence_matrix,
+        c=cgrad([:white, :blue]),
+        xlabel="Observations", ylabel="Observations",
+        title="Co-occurrence Matrix")
+end
+
 function plot_co_occurrence_matrix(assignment::Vector{Int64})
     markov_chain = reshape(assignment, length(assignment), 1)
     plot_co_occurrence_matrix(markov_chain)

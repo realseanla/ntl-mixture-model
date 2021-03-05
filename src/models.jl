@@ -135,7 +135,7 @@ end
 
 struct ChangepointSufficientStatistics <: ClusterSufficientStatistics
     num_observations::Vector{Int64}
-    changepoints::BitArray 
+    clusters::BitArray 
 end
 
 abstract type DataSufficientStatistics end
@@ -194,7 +194,7 @@ struct HiddenMarkovModel{C<:Union{ClusterParameters, ParametricArrivalsClusterPa
 end
 
 struct Changepoint{C<:Union{ClusterParameters, ParametricArrivalsClusterParameters}, D<:DataParameters} <: Model
-    changepoint_parameters::C
+    cluster_parameters::C
     data_parameters::D
 end
 

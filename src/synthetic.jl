@@ -161,7 +161,7 @@ function prepare_data_matrix(::Type{T}, dim, n) where {T <: GaussianParameters}
 end
 
 get_cluster_parameters(model::Union{Mixture, HiddenMarkovModel}) = model.cluster_parameters
-get_cluster_parameters(model::Changepoint) = model.changepoint_parameters
+get_cluster_parameters(model::Changepoint) = model.cluster_parameters
 
 function generate(model::Model; n::Int64=100)
     data_parameters = model.data_parameters

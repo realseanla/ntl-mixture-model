@@ -17,13 +17,21 @@ function one_hot_encode(assignments::Vector{Int64})
 end
 
 function compute_co_occurrence_matrix(markov_chain::Matrix{Int64})
+    num_instances = size(markov_chain)[2]
+    weights = ones(Float64, num_instances)
+    return compute_co_occurrence_matrix(markov_chain, weights)
+end
+
+function compute_co_occurrence_matrix(markov_chain::Matrix{Int64}, weights::Vector{Float64})
     n = size(markov_chain)[1]
     co_occurrence_matrix = zeros(Int64, n, n)
     num_instances = size(markov_chain)[2]
     for i = ProgressBar(1:num_instances)
         assignment = markov_chain[:, i]
         ohe_assignment = one_hot_encode(assignment)
-        co_occurrence_matrix += transpose(ohe_assignment) * ohe_assignment
+        instance_co_occurrence_matrix = transpose(ohe_assignment) * ohe_assignment
+        weight = weights[i]
+        co_occurrence_matrix += weight*instance_co_occurrence_matrix
     end
     return co_occurrence_matrix
 end

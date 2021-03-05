@@ -80,7 +80,7 @@ end
 
 function gibbs_proposal(observation, data, sufficient_stats, model::Changepoint{C, D}) where {C <: DpParameters, D}
     data_parameters = model.data_parameters
-    changepoint_parameters = model.changepoint_parameters
+    cluster_parameters = model.cluster_parameters
     n = sufficient_stats.n
 
     changepoints = get_changepoints(sufficient_stats, observation)
@@ -100,23 +100,23 @@ function gibbs_proposal(observation, data, sufficient_stats, model::Changepoint{
     weights = Array{Float64}(undef, length(choices))
 
     if observation > 1 && observation < n
-        weights[1:num_changepoints+1] .= new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
+        weights[1:num_changepoints+1] .= new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
                                                                     oldest_changepoint)
         for (index, changepoint) in enumerate(changepoints) 
-            weights[index] += existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
+            weights[index] += existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
                                                               changepoint) 
         end
-        weights[num_changepoints+1] += new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
+        weights[num_changepoints+1] += new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
                                                                   observation)
-        weights[end] = merge_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoints)
+        weights[end] = merge_cluster_log_predictive(sufficient_stats, model.cluster_parameters, changepoints)
     elseif observation === 1
         @assertion length(choices) === 2
-        weights[1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, observation)
-        weights[2] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, newest_changepoint)
+        weights[1] = new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, observation)
+        weights[2] = existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, newest_changepoint)
     elseif observation === n
         @assertion length(choices) === 2
-        weights[1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, oldest_changepoint)
-        weights[2] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, oldest_changepoint)
+        weights[1] = new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, oldest_changepoint)
+        weights[2] = existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, oldest_changepoint)
     end
 
     weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
@@ -126,7 +126,7 @@ end
 
 function gibbs_proposal(observation, data, sufficient_stats, model::Changepoint{C, D}) where {C <: NtlParameters, D}
     data_parameters = model.data_parameters
-    changepoint_parameters = model.changepoint_parameters
+    cluster_parameters = model.cluster_parameters
     n = sufficient_stats.n
 
     changepoints = get_changepoints(sufficient_stats, observation)
@@ -144,12 +144,12 @@ function gibbs_proposal(observation, data, sufficient_stats, model::Changepoint{
     weights = Array{Float64}(undef, length(choices))
 
     for (index, changepoint) in enumerate(changepoints) 
-        weights[index] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoint) 
+        weights[index] = existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, changepoint) 
     end
-    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, observation)
+    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, observation)
 
     if observation > 1 && observation < n
-        weights[end] = merge_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoints)
+        weights[end] = merge_cluster_log_predictive(sufficient_stats, model.cluster_parameters, changepoints)
     end
 
     weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
@@ -163,7 +163,7 @@ end
 
 function propose(observation, data, particles, particle, sufficient_stats, model::Changepoint)
     data_parameters = model.data_parameters
-    changepoint_parameters = model.changepoint_parameters
+    cluster_parameters = model.cluster_parameters
     n = sufficient_stats.n
 
     changepoints = get_changepoints(sufficient_stats, observation)
@@ -176,9 +176,9 @@ function propose(observation, data, particles, particle, sufficient_stats, model
     weights = Array{Float64}(undef, length(choices))
 
     for (index, changepoint) in enumerate(changepoints) 
-        weights[index] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoint) 
+        weights[index] = existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, changepoint) 
     end
-    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, observation)
+    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, observation)
 
     weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
 
@@ -325,8 +325,8 @@ function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::S
     return log_likelihood
 end
 
-function compute_data_log_likelihood(sufficient_stats::SufficientStatistics, data_parameters::DataParameters, 
-                                     clusters::Vector{Int64})
+function compute_data_log_likelihood(sufficient_stats::SufficientStatistics, data_parameters::DataParameters) 
+    clusters = get_clusters(sufficient_stats.cluster)
     log_likelihood = 0
     for cluster = clusters
         log_likelihood += compute_cluster_data_log_likelihood(cluster, sufficient_stats, data_parameters)
@@ -353,8 +353,8 @@ function compute_arrivals_log_likelihood(cluster_sufficient_stats::SufficientSta
 end
 
 function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D}, 
-                                           cluster_parameters::ParametricArrivalsClusterParameters{T}, 
-                                           clusters::Vector{Int64}) where {T, C <: MixtureSufficientStatistics, D}
+                                           cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
+                                           {T, C <: MixtureSufficientStatistics, D}
     log_likelihood = 0
     for cluster = clusters
         log_likelihood += compute_cluster_assignment_log_likelihood(cluster, sufficient_stats.cluster, 
@@ -364,29 +364,49 @@ function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistic
     return log_likelihood
 end
 
-function compute_joint_log_likelihood(sufficient_stats::SufficientStatistics, model::Mixture)
+function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D},
+                                           cluster_parameters::ParametricArrivalsClusterParameters{T}) where
+                                           {T, C <: HmmSufficientStatistics, D}
+    log_likelihood = 0
+    clusters = get_clusters(sufficient_stats.cluster)
+    cluster_bit_array = sufficient_stats.cluster.clusters
+    for source_cluster = clusters
+        source_cluster_num_obs = sufficient_stats.cluster.state_num_observations[source_cluster, :]
+        source_cluster_sufficient_stats = MixtureSufficientStatistics(source_cluster_num_obs, cluster_bit_array) 
+        target_clusters = get_clusters(sufficient_stats.cluster, source_cluster)
+        for target_cluster = target_cluster
+            log_likelihood += compute_cluster_assignment_log_likelihood(target_cluster, 
+                                                                        source_cluster_sufficient_stats, 
+                                                                        cluster_parameters)
+        end
+    end
+    log_likelihood += compute_arrivals_log_likelihood(sufficient_stats, cluster_parameters)
+    return log_likelihood
+end
+
+function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D}, 
+                                           cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
+                                           {T, C <: ChangepointSufficientStatistics, D}
+    log_likelihood = compute_arrivals_log_likelihood(sufficient_stats, cluster_parameters)
+    return log_likelihood
+end
+
+function compute_joint_log_likelihood(sufficient_stats::SufficientStatistics, model)
     data_parameters = model.data_parameters
     cluster_parameters = model.cluster_parameters
-    clusters = get_clusters(sufficient_stats.cluster)
-    log_likelihood = compute_data_log_likelihood(sufficient_stats, data_parameters, clusters)
-    log_likelihood += compute_assignment_log_likelihood(sufficient_stats, cluster_parameters, clusters)
+    log_likelihood = compute_data_log_likelihood(sufficient_stats, data_parameters)
+    log_likelihood += compute_assignment_log_likelihood(sufficient_stats, cluster_parameters)
     return log_likelihood
 end
 
 function compute_log_weight!(log_weights::Vector{Float64}, log_likelihoods::Vector{Float64}, 
                              proposal_log_weight::Float64, sufficient_stats::SufficientStatistics,
-                             model::Mixture, particle::Int64)
+                             model, particle::Int64)
     previous_log_weight = log_weights[particle]
     previous_log_likelihood = log_likelihoods[particle]
     log_likelihood = compute_joint_log_likelihood(sufficient_stats, model)
     log_weights[particle] = previous_log_weight + log_likelihood - previous_log_likelihood - proposal_log_weight
     log_likelihoods[particle] = log_likelihood
-end
-
-function compute_log_weight!(log_weights, log_likelihoods, proposal_log_weight, sufficient_stats, model::Changepoint,
-                             particle)
-    log_weights[particle] = proposal_log_weight
-    log_likelihoods[particle] = 1
 end
 
 function update_data_sufficient_statistics!(sufficient_stats::SufficientStatistics{C,D}, cluster::Int64, 
@@ -483,12 +503,12 @@ function update_changepoint_sufficient_statistics!(sufficient_stats::SufficientS
     if update_type === "remove"
         sufficient_stats.cluster.num_observations[changepoint] -= 1
         if sufficient_stats.cluster.num_observations[changepoint] === 0
-            sufficient_stats.cluster.changepoints[changepoint] = false
+            sufficient_stats.cluster.clusters[changepoint] = false
         end
     elseif update_type === "add"
         sufficient_stats.cluster.num_observations[changepoint] += 1
         if sufficient_stats.cluster.num_observations[changepoint] === 1
-            sufficient_stats.cluster.changepoints[changepoint] = true
+            sufficient_stats.cluster.clusters[changepoint] = true
         end
     else
         message = "$update_type is not a supported update type."
@@ -517,8 +537,8 @@ end
 function update_cluster_stats_new_birth_time!(cluster_sufficient_stats::ChangepointSufficientStatistics,
                                               new_time::Int64, old_time::Int64)
     update_cluster_stats_new_birth_time!(cluster_sufficient_stats.num_observations, new_time, old_time)
-    cluster_sufficient_stats.changepoints[new_time] = true
-    cluster_sufficient_stats.changepoints[old_time] = false
+    cluster_sufficient_stats.clusters[new_time] = true
+    cluster_sufficient_stats.clusters[old_time] = false
 end
 
 function update_data_stats_new_birth_time!(data_sufficient_stats::GaussianSufficientStatistics, 
@@ -694,11 +714,11 @@ function compute_arrival_distribution_posterior(sufficient_stats::SufficientStat
 end
 
 function compute_arrival_distribution_posterior(sufficient_stats::SufficientStatistics{C, D},
-                                                changepoint_parameters::ParametricArrivalsClusterParameters{T}) where 
+                                                cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
                                                 {T <: GeometricArrivals, C <: ChangepointSufficientStatistics, D}
     n = sufficient_stats.n
     num_changepoints = length(get_changepoints(sufficient_stats.cluster))
-    phi_posterior = deepcopy(changepoint_parameters.arrival_distribution.prior)
+    phi_posterior = deepcopy(cluster_parameters.arrival_distribution.prior)
     phi_posterior[1] += num_changepoints - 1
     phi_posterior[2] += n - num_changepoints 
     return phi_posterior
@@ -1010,7 +1030,11 @@ get_clusters(cluster_sufficient_stats::ClusterSufficientStatistics) = findall(cl
 
 get_clusters(cluster_sufficient_stats::HmmSufficientStatistics) = findall(cluster_sufficient_stats.clusters)
 
-get_changepoints(changepoint_suff_stats::ChangepointSufficientStatistics) = findall(changepoint_suff_stats.changepoints)
+function get_clusters(cluster_sufficient_stats::HmmSufficientStatistics, cluster) 
+    return findall(cluster_sufficient_stats.state_num_observations[cluster, :] .> 0)
+end
+
+get_changepoints(changepoint_suff_stats::ChangepointSufficientStatistics) = findall(changepoint_suff_stats.clusters)
 
 function get_changepoints(sufficient_stats::SufficientStatistics, observation::Int64)
     n = sufficient_stats.n
@@ -1052,7 +1076,7 @@ end
 
 function gibbs_move(observation, data, sufficient_stats, model::Changepoint{C, D}) where {C <: DpParameters, D}
     data_parameters = model.data_parameters
-    changepoint_parameters = model.changepoint_parameters
+    cluster_parameters = model.cluster_parameters
     n = sufficient_stats.n
 
     changepoints = get_changepoints(sufficient_stats, observation)
@@ -1072,23 +1096,23 @@ function gibbs_move(observation, data, sufficient_stats, model::Changepoint{C, D
     weights = Array{Float64}(undef, length(choices))
 
     if observation > 1 && observation < n
-        weights[1:num_changepoints+1] .= new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
+        weights[1:num_changepoints+1] .= new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
                                                                     oldest_changepoint)
         for (index, changepoint) in enumerate(changepoints) 
-            weights[index] += existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
+            weights[index] += existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
                                                               changepoint) 
         end
-        weights[num_changepoints+1] += new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, 
+        weights[num_changepoints+1] += new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
                                                                   observation)
-        weights[end] = merge_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoints)
+        weights[end] = merge_cluster_log_predictive(sufficient_stats, model.cluster_parameters, changepoints)
     elseif observation === 1
         @assertion length(choices) === 2
-        weights[1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, observation)
-        weights[2] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, newest_changepoint)
+        weights[1] = new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, observation)
+        weights[2] = existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, newest_changepoint)
     elseif observation === n
         @assertion length(choices) === 2
-        weights[1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, oldest_changepoint)
-        weights[2] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, oldest_changepoint)
+        weights[1] = new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, oldest_changepoint)
+        weights[2] = existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, oldest_changepoint)
     end
 
     weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
@@ -1098,7 +1122,7 @@ end
 
 function gibbs_move(observation, data, sufficient_stats, model::Changepoint{C, D}) where {C <: NtlParameters, D}
     data_parameters = model.data_parameters
-    changepoint_parameters = model.changepoint_parameters
+    cluster_parameters = model.cluster_parameters
     n = sufficient_stats.n
 
     changepoints = get_changepoints(sufficient_stats, observation)
@@ -1116,12 +1140,12 @@ function gibbs_move(observation, data, sufficient_stats, model::Changepoint{C, D
     weights = Array{Float64}(undef, length(choices))
 
     for (index, changepoint) in enumerate(changepoints) 
-        weights[index] = existing_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoint) 
+        weights[index] = existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, changepoint) 
     end
-    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, observation)
+    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, observation)
 
     if observation > 1 && observation < n
-        weights[end] = merge_cluster_log_predictive(sufficient_stats, model.changepoint_parameters, changepoints)
+        weights[end] = merge_cluster_log_predictive(sufficient_stats, model.cluster_parameters, changepoints)
     end
 
     weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
@@ -1470,12 +1494,5 @@ function compute_existing_cluster_log_predictives(observation::Int64, clusters::
 end
 
 get_clusters(cluster_sufficient_stats::HmmSufficientStatistics) = findall(cluster_sufficient_stats.clusters)
-
-function compute_log_weight!(log_weights::Vector{Float64}, log_likelihoods::Vector{Float64}, 
-                             proposal_log_weight::Float64, sufficient_stats::SufficientStatistics,
-                             model::HiddenMarkovModel, particle::Int64)
-    log_weights[particle] = 1
-    log_likelihoods[particle] = 0
-end
 
 end
