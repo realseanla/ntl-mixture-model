@@ -71,10 +71,30 @@ isnothing(::Nothing) = true
 function compute_normalized_weights(log_weights)
     num_weights = length(log_weights)
     max_value = maximum(log_weights)
-    scaled_weights = exp.(log_weights .- max_value .+ log(num_weights))
-    normalized_weights = scaled_weights ./ sum(scaled_weights)
-    normalized_weights[isnan.(normalized_weights)] .= 0
+    shifted_log_weights = log_weights .- max_value
+    weights = exp.(shifted_log_weights)
+    normalized_weights = weights ./ sum(weights)
+    @assert !any(isnan.(normalized_weights))
     return normalized_weights
+end
+
+function effective_sample_size(log_weights)
+    normalized_weights = compute_normalized_weights(log_weights)
+    ess = 1/sum(normalized_weights.^2)
+    @assert !isnan(ess)
+    return ess
+end
+
+function hist(v::AbstractVector, edg::AbstractVector)
+    n = length(edg)-1
+    h = zeros(Int, n)
+    for x in v
+        i = searchsortedfirst(edg, x)-1
+        if 1 <= i <= n
+            h[i] += 1
+        end
+    end
+    return h
 end
 
 end

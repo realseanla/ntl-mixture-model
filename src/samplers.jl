@@ -1,6 +1,6 @@
 module Samplers
 
-export GibbsSampler, SequentialMonteCarlo
+export GibbsSampler, SequentialMonteCarlo, SequentialImportanceSampler
 
 abstract type Sampler end
 
@@ -24,8 +24,7 @@ end
 struct SequentialMonteCarlo <: Sampler
     num_particles::Int64
     ess_threshold::Float64
-    resample_at_end::Bool
-    function SequentialMonteCarlo(;num_particles::Int64=1000, ess_threshold::T=0.5, resample_at_end::Bool=false) where 
+    function SequentialMonteCarlo(;num_particles::Int64=1000, ess_threshold::T=0.5) where 
                                   {T <: Real}
         if num_particles < 1
             error("Number of particles should be positive.")
@@ -39,7 +38,14 @@ struct SequentialMonteCarlo <: Sampler
         if ess_threshold < 1
             ess_threshold = num_particles*ess_threshold
         end
-        return new(num_particles, ess_threshold, resample_at_end)
+        return new(num_particles, ess_threshold)
+    end
+end
+
+struct SequentialImportanceSampler <: Sampler
+    num_particles::Int64
+    function SequentialImportanceSampler(;num_particles=1000)
+        return new(num_particles)
     end
 end
 
