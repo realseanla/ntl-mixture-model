@@ -7,8 +7,10 @@ using LinearAlgebra
 
 function changepoint_gibbs_test(;n=10, iterations=10) 
     Random.seed!(1)
-    dirichlet_scale = ones(Float64, 10)
-    data_parameters = Ntl.Models.MultinomialParameters(20, dirichlet_scale)
+    data_covariance = Matrix{Float64}(0.1I, 2, 2)
+    prior_covariance = Matrix{Float64}(I, 2, 2)
+    prior_mean = Vector{Float64}(zeros(2))
+    data_parameters = Ntl.Models.GaussianParameters(data_covariance, prior_mean, prior_covariance)
 
     psi_prior = Vector{Float64}([1, 1])
     phi_prior = Vector{Float64}([1, 1])
@@ -20,7 +22,7 @@ function changepoint_gibbs_test(;n=10, iterations=10)
     changepoint = Ntl.Generate.generate(changepoint_model, n=n)
     data = Matrix(transpose(changepoint[:, 2:end]))
 
-    gibbs_sampler = Ntl.Samplers.GibbsSampler(iterations)
+    gibbs_sampler = Ntl.Samplers.GibbsSampler(num_iterations=iterations)
     results = Ntl.Fitter.fit(data, changepoint_model, gibbs_sampler)
 end
 
