@@ -85,6 +85,11 @@ function effective_sample_size(log_weights)
     return ess
 end
 
+function maximum_a_posterior(instances, log_likelihoods)
+    max_value = maximum(log_likelihoods)
+    return instances[:, log_likelihoods .=== max_value]
+end
+
 function hist(v::AbstractVector, edg::AbstractVector)
     n = length(edg)-1
     h = zeros(Int, n)

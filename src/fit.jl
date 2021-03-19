@@ -28,7 +28,15 @@ function random_initial_assignment!(instances, data, sufficient_stats, model::Un
     n = sufficient_stats.n
     iteration = 1
     cluster = 1
+    clusters = []
     for observation = 1:n
+        coin_flip = reshape(rand(Binomial(1, 0.1), 1), 1)[1]
+        if coin_flip === 1 || length(clusters) === 0
+            cluster = observation
+            append!(clusters, cluster)
+        else
+            cluster = rand(clusters)
+        end
         add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model)
     end
 end
@@ -51,19 +59,22 @@ end
 function fit(data::Matrix{T}, model, sampler::GibbsSampler) where {T <: Real}
     n = size(data)[2]
     dim = size(data)[1]
-    instances = Array{Int64}(undef, n, sampler.num_iterations)
+    instances = Array{Int64}(undef, n, sampler.num_iterations+1)
+    log_likelihoods = Vector{Float64}(undef, sampler.num_iterations+1)
     n = size(data)[2]
     sufficient_stats = prepare_sufficient_statistics(model, data)
     # Assign all of the observations to the first cluster
     random_initial_assignment!(instances, data, sufficient_stats, model)
-    for iteration = ProgressBar(2:sampler.num_iterations)
+    log_likelihoods[1] = compute_joint_log_likelihood(sufficient_stats, model)
+    for iteration = ProgressBar(2:sampler.num_iterations+1)
         instances[:, iteration] = instances[:, iteration-1]
         for observation = 1:n
             gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model)
             @assertion sum(sufficient_stats.cluster.num_observations[1:n]) === n
         end
+        log_likelihoods[iteration] = compute_joint_log_likelihood(sufficient_stats, model)
     end
-    return instances
+    return (instances[:, 2:end], log_likelihoods[2:end])
 end
 
 function gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model::Mixture)
@@ -233,8 +244,8 @@ end
 
 function resample!(particles, log_weights, log_likelihoods, sufficient_stats_array, sampler::SequentialMonteCarlo)
     ess = effective_sample_size(log_weights)
-    
-    if ess < sampler.ess_threshold
+    n = size(particles)[1] 
+    if ess < sampler.ess_threshold*n
         resampled_indices = gumbel_max(sampler.num_particles, log_weights)
 
         resampled_particles = particles[:, resampled_indices]
@@ -346,7 +357,7 @@ function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::S
     posterior_log_determinant = log(abs(det(posterior_covariance)))
 
     n = sufficient_stats.cluster.num_observations[cluster]
-    log_likelihood += log(2*pi)*dim*(n + 1)/2 - (n/2)data_log_determinant - (1/2)prior_log_determinant
+    log_likelihood += log(2*pi)*dim*(n + 1)/2 - (n/2)data_log_determinant - (1/2)prior_log_determinant + (1/2)posterior_log_determinant
     return log_likelihood
 end
 
@@ -381,6 +392,7 @@ function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistic
                                            cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
                                            {T, C <: MixtureSufficientStatistics, D}
     log_likelihood = 0
+    clusters = get_clusters(sufficient_stats.cluster)
     for cluster = clusters
         log_likelihood += compute_cluster_assignment_log_likelihood(cluster, sufficient_stats.cluster, 
                                                                     cluster_parameters)
