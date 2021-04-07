@@ -4,6 +4,7 @@ export Model, Mixture, HiddenMarkovModel
 export ArrivalDistribution, GeometricArrivals
 export MixtureParameters, NtlParameters, DpParameters
 export DataParameters, GaussianParameters, MultinomialParameters 
+export GaussianWishartParameters
 export ClusterSufficientStatistics, DataSufficientStatistics
 export NtlSufficientStatistics, GaussianSufficientStatistics, MultinomialParameters
 export HmmSufficientStatistics, MixtureSufficientStatistics
@@ -18,11 +19,11 @@ using SparseArrays
 abstract type DataParameters end
 
 struct GaussianParameters <: DataParameters
-    dim::Int64
     data_covariance::Matrix{Float64}
     data_precision::Matrix{Float64}
     prior_mean::Vector{Float64}
     prior_covariance::Matrix{Float64}
+    dim::Int64
     function GaussianParameters(data_covariance::Matrix{Float64},
                                 prior_mean::Vector{Float64},
                                 prior_covariance::Matrix{Float64})
@@ -34,7 +35,19 @@ struct GaussianParameters <: DataParameters
             error("Dimension of mean prior must match each dimension of prior covariance")
         end
         data_precision = inv(data_covariance)
-        return new(dim, data_covariance, data_precision, prior_mean, prior_covariance)
+        return new(data_covariance, data_precision, prior_mean, prior_covariance, dim)
+    end
+end
+
+struct GaussianWishartParameters <: DataParameters
+    prior_mean::Vector{Float64}
+    scale_matrix::Matrix{Float64}
+    scale::Float64
+    dof::Float64
+    dim::Int64
+    function GaussianWishartParameters(prior_mean, scale_matrix, scale, dof)
+        dim = length(prior_mean) 
+        return new(prior_mean, scale_matrix, scale, dof, dim)
     end
 end
 
@@ -159,6 +172,15 @@ struct GaussianSufficientStatistics <: DataSufficientStatistics
         end
         return new(data_means, data_precision_quadratic_sum, posterior_means, posterior_covs)
     end
+end
+
+struct GaussianWishartSufficientStatistics <: DataSufficientStatistics
+    data_means::Matrix{Float64}
+    data_outer_product_sums::Matrix{Float64}
+    posterior_means::Matrix{Float64}
+    posterior_scale_matrix::Matrix{Float64}
+    posterior_scale::Vector{Float64}
+    posterior_dof::Vector{Float64}
 end
 
 struct MultinomialSufficientStatistics <: DataSufficientStatistics

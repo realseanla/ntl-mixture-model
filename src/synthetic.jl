@@ -1,11 +1,17 @@
 module Generate
 
 using ..Models: ClusterParameters, DataParameters, GaussianParameters, GeometricArrivals, NtlParameters
+using ..Models: GaussianWishartParameters
 using ..Models: ArrivalDistribution, MultinomialParameters
 using ..Models: Model, Mixture, Changepoint, HiddenMarkovModel
 using Distributions
 using LinearAlgebra
 using DataFrames
+
+struct LocationScale
+    location::Vector{Float64}
+    scale::Matrix{Float64}
+end
 
 function generate_log_pmfs(psi_variates::Vector{Float64})
     num_clusters = length(psi_variates)
@@ -123,9 +129,32 @@ function sample_cluster_parameters(num_clusters, data_parameters::GaussianParame
     return rand(dist, num_clusters)
 end
 
+function sample_cluster_parameters(num_clusters, data_parameters::GaussianWishartParameters)
+    location_scale_parameters = Vector{LocationScale}(undef, num_clusters)
+    dim = data_parameters.dim
+    for i = 1:num_clusters
+        covariance_matrix = rand(InverseWishart(data_parameters.dof, data_parameters.scale_matrix), 1)[1]
+        covariance_matrix = reshape(covariance_matrix, dim, dim)
+        scale = data_parameters.scale
+        data_mean = vec(rand(MvNormal(data_parameters.prior_mean, (1/scale)covariance_matrix), 1))
+        location_scale = LocationScale(data_mean, covariance_matrix)
+        location_scale_parameters[i] = location_scale
+    end
+    return location_scale_parameters
+end
+
 function sample_cluster_parameters(num_clusters, data_parameters::MultinomialParameters)
     dist = Dirichlet(data_parameters.prior_dirichlet_scale)
     return rand(dist, num_clusters)
+end
+
+function sample_data(cluster, num_assigned, location_scale_parameters::Vector{LocationScale}, ::GaussianWishartParameters)
+    location_scale = location_scale_parameters[cluster]
+    location = location_scale.location
+    scale = location_scale.scale
+    normal_distribution = MvNormal(location, scale)
+    cluster_data = rand(normal_distribution, num_assigned)
+    return cluster_data
 end
 
 function sample_data(cluster::Int64, num_assigned::Int64, cluster_means::Matrix{Float64}, 
@@ -157,6 +186,10 @@ function prepare_data_matrix(::Type{T}, dim, n) where {T <: MultinomialParameter
 end
 
 function prepare_data_matrix(::Type{T}, dim, n) where {T <: GaussianParameters}
+    return Array{Float64}(undef, dim, n)
+end
+
+function prepare_data_matrix(::Type{T}, dim, n) where {T <: GaussianWishartParameters}
     return Array{Float64}(undef, dim, n)
 end
 

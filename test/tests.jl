@@ -92,4 +92,27 @@ function ntl_hmm_test(;n=10, iterations=10)
     markov_chain = Ntl.Fitter.fit(data, hmm_model, gibbs_sampler)
 end
 
+function ntl_mixture_test(;n=10, iterations=10)
+    Random.seed!(1)
+    
+    scale_matrix = Matrix{Float64}(I, 2, 2)
+    scale = 10000
+    dof = 2
+    prior_mean = Vector{Float64}(zeros(2))
+    data_parameters = Ntl.Models.GaussianWishartParameters(prior_mean, scale_matrix, scale, dof)
+
+    psi_prior = Vector{Float64}([1, 1])
+    phi_prior = Vector{Float64}([1, 1])
+    geometric_arrival = Ntl.Models.GeometricArrivals(phi_prior)
+    ntl_cluster_parameters = Ntl.Models.NtlParameters(psi_prior, geometric_arrival)
+    
+    mixture_model = Ntl.Models.Mixture(ntl_cluster_parameters, data_parameters)
+    mixture = Ntl.Generate.generate(mixture_model, n=n)
+    data = Matrix(transpose(mixture[:, 2:end]))
+
+    gibbs_sampler = Ntl.Samplers.GibbsSampler(num_iterations=iterations)
+    model = Ntl.Models.Mixture(ntl_cluster_parameters, data_parameters)
+    markov_chain = Ntl.Fitter.fit(data, model, gibbs_sampler)
+end
+
 end

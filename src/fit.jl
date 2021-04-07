@@ -1,6 +1,7 @@
 module Fitter
 
 using ..Models: DataParameters, ClusterParameters, GaussianParameters, NtlParameters, DpParameters
+using ..Models: GaussianWishartParameters, GaussianWishartSufficientStatistics
 using ..Models: DataSufficientStatistics, MixtureSufficientStatistics, GaussianSufficientStatistics
 using ..Models: MultinomialParameters, MultinomialSufficientStatistics, GeometricArrivals
 using ..Models: HmmSufficientStatistics, StationaryHmmSufficientStatistics, NonstationaryHmmSufficientStatistics
@@ -9,6 +10,7 @@ using ..Models: ParametricArrivalsClusterParameters, BetaNtlParameters
 using ..Models: ChangepointSufficientStatistics, PitmanYorArrivals, SufficientStatistics 
 using ..Samplers: Sampler, GibbsSampler, SequentialMonteCarlo, SequentialImportanceSampler
 using ..Utils: logbeta, logmvbeta, log_multinomial_coeff, gumbel_max, isnothing, compute_normalized_weights, effective_sample_size, hist
+using ..Utils: mvt_logpdf
 
 using Distributions
 using LinearAlgebra
@@ -300,6 +302,27 @@ function prepare_data_sufficient_statistics(data::Matrix{Float64}, data_paramete
     return GaussianSufficientStatistics(data_means, data_precision_quadratic_sums, posterior_means, posterior_covs)
 end
 
+function prepare_data_sufficient_statistics(data::Matrix{Float64}, data_parameters::GaussianWishartParameters)
+    dim = size(data)[1]
+    n = size(data)[2]
+    data_means = zeros(Float64, dim, n+1)
+    data_outer_product_sums = zeros(Float64, dim*dim, n+1)
+    posterior_means = Matrix{Float64}(undef, dim, n+1)
+    for i = 1:(n+1)
+        posterior_means[:, i] = data_parameters.prior_mean
+    end
+    posterior_scale_matrices = Matrix{Float64}(undef, dim*dim, n+1)
+    for i = 1:(n+1)
+        posterior_scale_matrices[:, i] = vec(data_parameters.scale_matrix)
+    end
+    posterior_scales = Vector{Float64}(undef, n+1)
+    posterior_scales .= data_parameters.scale
+    posterior_dof = Vector{Float64}(undef, n+1)
+    posterior_dof .= data_parameters.dof
+    return GaussianWishartSufficientStatistics(data_means, data_outer_product_sums, posterior_means, posterior_scale_matrices, 
+                                               posterior_scales, posterior_dof)
+end
+
 function prepare_data_sufficient_statistics(data::Matrix{Int64}, data_parameters::MultinomialParameters)
     dim = size(data)[1]
     n = size(data)[2]
@@ -359,6 +382,11 @@ function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::S
     n = sufficient_stats.cluster.num_observations[cluster]
     log_likelihood += log(2*pi)*dim*(n + 1)/2 - (n/2)data_log_determinant - (1/2)prior_log_determinant + (1/2)posterior_log_determinant
     return log_likelihood
+end
+
+# TODO: implement this
+function compute_cluster_data_log_likelihood(cluster, sufficient_stats, data_parameters::GaussianWishartParameters)
+    return 0
 end
 
 function compute_data_log_likelihood(sufficient_stats::SufficientStatistics, data_parameters::DataParameters) 
@@ -479,15 +507,39 @@ function update_data_sufficient_statistics!(sufficient_stats::SufficientStatisti
         message = "$update_type is not a supported update type."
         throw(ArgumentError(message))
     end
-    @assertion !any(isnan.(cluster_mean))
-    @assertion !any(isnan.(data_precision_quadratic_sum))
     sufficient_stats.data.data_means[:, cluster] = cluster_mean
     sufficient_stats.data.data_precision_quadratic_sums[cluster] = data_precision_quadratic_sum
 end
 
+function update_data_sufficient_statistics!(sufficient_stats::SufficientStatistics{C,D}, cluster::Int64, 
+                                            datum::Vector{Float64}, model::Model;
+                                            update_type::String="add") where {C, D<:GaussianWishartSufficientStatistics}
+    cluster_mean = vec(sufficient_stats.data.data_means[:, cluster])
+    dim = length(cluster_mean)
+    data_outer_product_sum = reshape(sufficient_stats.data.data_outer_product_sums[:, cluster], dim, dim)
+    n = sufficient_stats.cluster.num_observations[cluster]
+    datum_outer_product = datum*transpose(datum)
+    if update_type == "add"
+        cluster_mean = (cluster_mean.*(n-1) + datum)./n
+        data_outer_product_sum += datum_outer_product
+    elseif update_type == "remove"
+        if n > 0
+            cluster_mean = (cluster_mean.*(n+1) - datum)./n
+            data_outer_product_sum -= datum_outer_product
+        else
+            cluster_mean .= 0
+            data_outer_product_sum .= 0
+        end
+    else
+        message = "$update_type is not a supported update type."
+        throw(ArgumentError(message))
+    end
+    sufficient_stats.data.data_means[:, cluster] = cluster_mean
+    sufficient_stats.data.data_outer_product_sums[:, cluster] = vec(data_outer_product_sum)
+end
+
 function update_data_sufficient_statistics!(sufficient_stats::SufficientStatistics{C, D}, clusters::Vector{Int64}) where 
                                            {C, D <: GaussianSufficientStatistics}
-    @assertion length(clusters) === 2
     new_cluster_mean = zeros(Float64, size(sufficient_stats.data.data_means)[1])
     new_quadratic_sum = 0.
     new_cluster_n = 0
@@ -599,6 +651,22 @@ function update_data_stats_new_birth_time!(data_sufficient_stats::GaussianSuffic
     data_sufficient_stats.posterior_covs[:, old_time] = vec(data_parameters.prior_covariance)
     data_sufficient_stats.data_precision_quadratic_sums[new_time] = data_sufficient_stats.data_precision_quadratic_sums[old_time]
     data_sufficient_stats.data_precision_quadratic_sums[old_time] = 0
+end
+
+function update_data_stats_new_birth_time!(data_sufficient_stats::GaussianWishartSufficientStatistics,
+                                           new_time, old_time, data_parameters::GaussianWishartParameters)
+    data_sufficient_stats.data_means[:, new_time] = data_sufficient_stats.data_means[:, old_time]
+    data_sufficient_stats.data_means[:, old_time] .= 0
+    data_sufficient_stats.data_outer_product_sums[:, new_time] = data_sufficient_stats.data_outer_product_sums[:, old_time]
+    data_sufficient_stats.data_outer_product_sums[:, old_time] .= 0
+    data_sufficient_stats.posterior_means[:, new_time] = data_sufficient_stats.posterior_means[:, old_time]
+    data_sufficient_stats.posterior_means[:, old_time] = data_parameters.prior_mean
+    data_sufficient_stats.posterior_scale_matrix[:, new_time] = data_sufficient_stats.posterior_scale_matrix[:, old_time]
+    data_sufficient_stats.posterior_scale_matrix[:, old_time] = vec(data_parameters.scale_matrix)
+    data_sufficient_stats.posterior_scale[new_time] = data_sufficient_stats.posterior_scale[old_time]
+    data_sufficient_stats.posterior_scale[old_time] = data_parameters.scale
+    data_sufficient_stats.posterior_dof[new_time] = data_sufficient_stats.posterior_dof[old_time]
+    data_sufficient_stats.posterior_dof[old_time] = data_parameters.dof
 end
 
 function update_data_stats_new_birth_time!(data_sufficient_stats::MultinomialSufficientStatistics, 
@@ -948,6 +1016,29 @@ function compute_data_posterior_parameters!(cluster::Int64, sufficient_stats::Su
     sufficient_stats.data.posterior_covs[:, cluster] = vec(cov)
 end
 
+function compute_data_posterior_parameters!(cluster, sufficient_stats, data_parameters::GaussianWishartParameters)
+    data_mean = vec(sufficient_stats.data.data_means[:, cluster])
+    dim = length(data_mean)
+    data_outer_product_sum = reshape(sufficient_stats.data.data_outer_product_sums[:, cluster], dim, dim)
+    n = sufficient_stats.cluster.num_observations[cluster]
+    prior_mean = data_parameters.prior_mean
+    scale_matrix = data_parameters.scale_matrix
+    scale = data_parameters.scale
+    dof = data_parameters.dof
+
+    posterior_scale = scale + n
+    posterior_mean = (scale*prior_mean + n*data_mean)/posterior_scale
+    C = data_outer_product_sum - n*data_mean*transpose(data_mean)
+    inverse_scale = inv(scale_matrix)
+    posterior_inverse_scale_matrix = inverse_scale + C + (scale*n)*(data_mean - prior_mean)*transpose(data_mean - prior_mean)/(posterior_scale)
+    posterior_scale_matrix = inv(posterior_inverse_scale_matrix)
+    posterior_dof = dof + n
+    sufficient_stats.data.posterior_means[:, cluster] = vec(posterior_mean)
+    sufficient_stats.data.posterior_scale_matrix[:, cluster] = vec(posterior_scale_matrix)
+    sufficient_stats.data.posterior_scale[cluster] = posterior_scale
+    sufficient_stats.data.posterior_dof[cluster] = posterior_dof
+end
+
 function compute_data_posterior_parameters!(cluster::Int64, sufficient_stats, data_parameters::MultinomialParameters)
     cluster_counts = sufficient_stats.data.total_counts[:, cluster]
     posterior_parameters = (cluster_counts + data_parameters.prior_dirichlet_scale)
@@ -962,6 +1053,17 @@ function data_log_predictive(datum::Vector{Float64}, cluster::Int64,
     posterior_cov = reshape(data_sufficient_stats.posterior_covs[:, cluster], dim, dim)
     posterior = MvNormal(posterior_mean, data_parameters.data_covariance + posterior_cov)
     return logpdf(posterior, datum)
+end
+
+function data_log_predictive(datum::Vector{Float64}, cluster::Int64, data_sufficient_stats::GaussianWishartSufficientStatistics, 
+                             data_parameters::GaussianWishartParameters)
+    posterior_mean = vec(data_sufficient_stats.posterior_means[:, cluster])
+    dim = length(posterior_mean)
+    posterior_scale_matrix = reshape(data_sufficient_stats.posterior_scale_matrix[:, cluster], dim, dim)
+    posterior_scale = data_sufficient_stats.posterior_scale[cluster]
+    posterior_dof = data_sufficient_stats.posterior_dof[cluster]
+    mat = (posterior_scale + 1)*posterior_scale_matrix/(posterior_scale*(posterior_dof - dim + 1))
+    return mvt_logpdf(posterior_mean, mat, posterior_dof - dim + 1, datum)
 end
 
 function data_log_predictive(datum::Vector{Int64}, cluster::Int64, 
