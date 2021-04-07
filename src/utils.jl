@@ -4,6 +4,9 @@ using Distributions
 using SpecialFunctions
 import SpecialFunctions: logbeta 
 using ProgressBars
+using LinearAlgebra
+using Clustering
+using RCall
 
 function one_hot_encode(assignments::Vector{Int64})
     n = length(assignments)
@@ -33,6 +36,8 @@ function compute_co_occurrence_matrix(markov_chain::Matrix{Int64}, weights::Vect
         weight = weights[i]
         co_occurrence_matrix += weight*instance_co_occurrence_matrix
     end
+    max_value = maximum(co_occurrence_matrix)
+    co_occurrence_matrix /= max_value
     return co_occurrence_matrix
 end
 
@@ -90,6 +95,23 @@ function maximum_a_posterior(instances, log_likelihoods)
     return instances[:, log_likelihoods .=== max_value]
 end
 
+function num_clusters(instances)
+    return vec(mapslices(a -> length(unique(a)), instances; dims=[1]))
+end
+
+function mean_num_clusters(instances, weights)
+    number_of_clusters = num_clusters(instances)
+    return sum(weights .* number_of_clusters)/sum(weights)
+end
+
+function mean_num_clusters(instances::Matrix)
+    return mean(num_clusters(instances))
+end
+
+function mean_num_clusters(instances::Vector)
+    return mean_num_clusters(instances, [1])
+end
+
 function hist(v::AbstractVector, edg::AbstractVector)
     n = length(edg)-1
     h = zeros(Int, n)
@@ -100,6 +122,40 @@ function hist(v::AbstractVector, edg::AbstractVector)
         end
     end
     return h
+end
+
+function mvt_logpdf(location, scale, dof, datum)
+    log_det = logdet(scale)
+    dim = length(datum)
+    log_likelihood = -(dof + dim)log(1 + transpose(datum - location)*inv(scale)*(datum - location)/dof)/2
+    log_likelihood += loggamma((dof + dim)/2) - loggamma(dof/2) - dim*log(dof*pi)/2 - log_det/2 
+    return log_likelihood
+end
+
+function adjusted_rand_index(c1::Vector{Int64}, c2::Vector{Int64})
+    return Clustering.randindex(c1,c2)[1]
+end
+
+function minbinder(posterior_similarity_matrix::Matrix{Float64}, iterations::Matrix{Int64})
+    draws = Matrix(transpose(iterations))
+    R"library('mcclust')"
+    R"library('mcclust.ext')"
+    @rput posterior_similarity_matrix
+    @rput draws
+    R"binder_clustering <- minbinder.ext(posterior_similarity_matrix, draws, method='draws')"
+    clustering = vec(rcopy(R"binder_clustering$cl"))
+    return clustering
+end
+
+function minVI(posterior_similarity_matrix, iterations)
+    draws = Matrix(transpose(iterations))
+    R"library('mcclust')"
+    R"library('mcclust.ext')"
+    @rput posterior_similarity_matrix
+    @rput draws
+    R"vi_clustering <- minVI(posterior_similarity_matrix, draws, method='draws')"
+    clustering = vec(rcopy(R"binder_clustering$cl"))
+    return clustering
 end
 
 end
