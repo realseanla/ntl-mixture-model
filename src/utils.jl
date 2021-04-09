@@ -144,6 +144,7 @@ function minbinder(posterior_similarity_matrix::Matrix{Float64}, iterations::Mat
     @rput draws
     R"binder_clustering <- minbinder.ext(posterior_similarity_matrix, draws, method='draws')"
     clustering = vec(rcopy(R"binder_clustering$cl"))
+    R"rm(list = ls())"
     return clustering
 end
 
@@ -154,7 +155,8 @@ function minVI(posterior_similarity_matrix, iterations)
     @rput posterior_similarity_matrix
     @rput draws
     R"vi_clustering <- minVI(posterior_similarity_matrix, draws, method='draws')"
-    clustering = vec(rcopy(R"binder_clustering$cl"))
+    clustering = vec(rcopy(R"vi_clustering$cl"))
+    R"rm(list = ls())"
     return clustering
 end
 

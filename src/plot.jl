@@ -43,4 +43,22 @@ function plot_co_occurrence_matrix(assignment::Vector{Float64})
     plot_co_occurrence_matrix(assignment)
 end
 
+function plot_arrival_posterior_probabilities(markov_chain, true_clustering)
+    num_iterations = size(markov_chain)[2]
+    num_observations = size(markov_chain)[1]
+    arrival_counts = zeros(Float64, num_observations)
+    observations = Array{Int64}(1:num_observations)
+    for i = 1:num_iterations
+        arrival_counts += (markov_chain[:, i] .=== observations)
+    end
+    arrival_posterior_probabilities = arrival_counts / num_iterations
+
+    observations = Array{Float64}(1:num_observations)
+    true_arrivals = findall(true_clustering .=== observations)
+
+    plot(1:num_observations, arrival_posterior_probabilities, seriestype=:scatter,
+         xlabel="Observation", ylabel="Probability", legend=false, )
+    vline!(true_arrivals)
+end
+
 end

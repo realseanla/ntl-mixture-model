@@ -17,6 +17,7 @@ using LinearAlgebra
 using Statistics
 using ProgressBars
 using SparseArrays
+using SpecialFunctions
 
 asserting() = true # when set to true, this will enable all `@assertion`s
 
@@ -384,11 +385,6 @@ function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::S
     return log_likelihood
 end
 
-# TODO: implement this
-function compute_cluster_data_log_likelihood(cluster, sufficient_stats, data_parameters::GaussianWishartParameters)
-    return 0
-end
-
 function compute_data_log_likelihood(sufficient_stats::SufficientStatistics, data_parameters::DataParameters) 
     clusters = get_clusters(sufficient_stats.cluster)
     log_likelihood = 0
@@ -414,6 +410,18 @@ function compute_arrivals_log_likelihood(cluster_sufficient_stats::SufficientSta
                                          cluster_parameters::NtlParameters{T}) where {T <: GeometricArrivals}
     phi_posterior = compute_arrival_distribution_posterior(cluster_sufficient_stats, cluster_parameters)
     return logbeta(phi_posterior) - logbeta(cluster_parameters.arrival_distribution.prior)
+end
+
+function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D},
+                                           cluster_parameters::DpParameters) where {T, C <: MixtureSufficientStatistics, D}
+    num_observations = sufficient_stats.cluster.num_observations
+    num_observations = num_observations[num_observations .> 0]
+    num_clusters = length(num_observations)
+    alpha = cluster_parameters.alpha
+    log_likelihood = sum(loggamma.(num_observations)) + num_clusters*log(alpha)
+    n = sufficient_stats.n
+    log_likelihood += loggamma(alpha) - loggamma(n + alpha)
+    return log_likelihood
 end
 
 function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D}, 
@@ -454,6 +462,12 @@ function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistic
                                            {T, C <: ChangepointSufficientStatistics, D}
     log_likelihood = compute_arrivals_log_likelihood(sufficient_stats, cluster_parameters)
     return log_likelihood
+end
+
+function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D}, 
+                                           cluster_parameters::DpParameters) where 
+                                           {T, C <: ChangepointSufficientStatistics, D}
+    return NaN
 end
 
 function compute_joint_log_likelihood(sufficient_stats::SufficientStatistics, model)
