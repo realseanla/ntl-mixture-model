@@ -53,8 +53,13 @@ function plot_arrival_posterior_probabilities(markov_chain, true_clustering)
     end
     arrival_posterior_probabilities = arrival_counts / num_iterations
 
-    observations = Array{Float64}(1:num_observations)
-    true_arrivals = findall(true_clustering .=== observations)
+    num_clusters = maximum(true_clustering)
+    clusters = Array{Float64}(1:num_clusters)
+    true_arrivals = []
+    for cluster = clusters
+        arrival = findfirst(true_clustering .=== cluster)
+        append!(true_arrivals, arrival)
+    end
 
     plot(1:num_observations, arrival_posterior_probabilities, seriestype=:scatter,
          xlabel="Observation", ylabel="Probability", legend=false, )
