@@ -1089,16 +1089,22 @@ function data_log_predictive(datum::Vector{Int64}, cluster::Int64,
     return logpdf(posterior, datum)
 end
 
-function compute_data_log_predictives(observation::Int64, clusters::Vector{Int64}, data::Matrix{T}, 
-                                      data_sufficient_stats::DataSufficientStatistics, 
-                                      data_parameters::DataParameters) where {T <: Real}
+function compute_data_log_predictives(datum::Vector{Float64}, clusters::Vector{Int64}, 
+                                     data_sufficient_stats::DataSufficientStatistics,
+                                     data_parameters::DataParameters)
     log_predictive = Array{Float64}(undef, length(clusters))
-    datum = vec(data[:, observation])
     dim = length(datum)
     for (index, cluster) = enumerate(clusters)
         log_predictive[index] = data_log_predictive(datum, cluster, data_sufficient_stats, data_parameters)
     end
     return log_predictive
+end
+
+function compute_data_log_predictives(observation::Int64, clusters::Vector{Int64}, data::Matrix{T}, 
+                                      data_sufficient_stats::DataSufficientStatistics, 
+                                      data_parameters::DataParameters) where {T <: Real}
+    datum = vec(data[:, observation])
+    return compute_data_log_predictives(datum, clusters, data_sufficient_stats, data_parameters)
 end
 
 get_clusters(cluster_sufficient_stats::ClusterSufficientStatistics) = findall(cluster_sufficient_stats.clusters)
