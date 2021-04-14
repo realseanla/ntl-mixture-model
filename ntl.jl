@@ -6,5 +6,6 @@ include("src/samplers.jl")
 include("src/fit.jl")
 include("src/plot.jl")
 include("src/synthetic.jl")
+include("src/evaluate.jl")
 
 end
