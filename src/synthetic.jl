@@ -1,7 +1,7 @@
 module Generate
 
 using ..Models: ClusterParameters, DataParameters, GaussianParameters, GeometricArrivals, NtlParameters
-using ..Models: GaussianWishartParameters
+using ..Models: GaussianWishartParameters, PoissonArrivals
 using ..Models: ArrivalDistribution, MultinomialParameters
 using ..Models: Model, Mixture, Changepoint, HiddenMarkovModel
 using Distributions
@@ -178,6 +178,19 @@ function generate_arrival_times(n::Int64, arrival_distribution::GeometricArrival
     phi = reshape(rand(Beta(arrival_prior[1], arrival_prior[2]), 1), 1)[1] 
     arrivals = rand(Binomial(1, phi), n-1)
     prepend!(arrivals, [1])
+    return arrivals
+end
+
+function generate_arrival_times(n::Int64, arrival_distribution::PoissonArrivals)
+    alpha = arrival_distribution.alpha
+    beta = arrival_distribution.beta
+    rate = rand(Gamma(alpha, 1/beta), 1)[1]
+    arrivals = zeros(Int64, n)
+    arrival_time = 1
+    while arrival_time <= n
+        arrivals[arrival_time] = 1
+        arrival_time += rand(Poisson(rate), 1)[1] + 1
+    end
     return arrivals
 end
 

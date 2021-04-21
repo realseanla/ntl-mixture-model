@@ -2,7 +2,7 @@ module Utils
 
 using Distributions
 using SpecialFunctions
-import SpecialFunctions: logbeta 
+import SpecialFunctions: logbeta, logfactorial 
 using ProgressBars
 using LinearAlgebra
 using Clustering
@@ -53,6 +53,8 @@ end
 function log_multinomial_coeff(counts::Vector{Int64})
     return logfactorial(sum(counts)) - sum(logfactorial.(counts)) 
 end
+
+logfactorial(x::Float64) = logfactorial(Int(x))
 
 function gumbel_max(objects::Vector{Int64}, log_weights::Vector{Float64})
     gumbel_values = rand(Gumbel(0, 1), length(log_weights))

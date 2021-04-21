@@ -1,7 +1,7 @@
 module Models
 
 export Model, Mixture, HiddenMarkovModel
-export ArrivalDistribution, GeometricArrivals
+export ArrivalDistribution, GeometricArrivals, PoissonArrivals
 export MixtureParameters, NtlParameters, DpParameters
 export DataParameters, GaussianParameters, MultinomialParameters 
 export GaussianWishartParameters
@@ -77,6 +77,11 @@ abstract type ArrivalDistribution end
 
 struct GeometricArrivals <: ArrivalDistribution
     prior::Vector{Float64}
+end
+
+struct PoissonArrivals <: ArrivalDistribution 
+    alpha::Float64
+    beta::Float64
 end
 
 struct PitmanYorArrivals <: ArrivalDistribution

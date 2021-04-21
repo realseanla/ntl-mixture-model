@@ -1,7 +1,7 @@
 module Evaluate
     using ..Fitter: prepare_sufficient_statistics, update_cluster_sufficient_statistics!, update_data_sufficient_statistics!
     using ..Fitter: compute_data_posterior_parameters!, get_clusters, compute_existing_cluster_log_predictives, new_cluster_log_predictive
-    using ..Fitter: compute_data_log_predictives
+    using ..Fitter: compute_data_log_predictives, prepare_auxillary_variables
     using ..Utils: compute_normalized_weights
 
     using Statistics
@@ -19,6 +19,7 @@ module Evaluate
         num_observations = size(posterior)[1]
         test_observation = num_observations+1
         predictive_probabilities = Array{Float64}(undef, num_iterations)
+        aux_variables = prepare_auxillary_variables(model, training_data)
         for iteration = 1:num_iterations
             sufficient_stats = prepare_sufficient_statistics(model, training_data) 
             for observation = 1:num_observations
@@ -34,8 +35,10 @@ module Evaluate
 
             cluster_log_weights = Array{Float64}(undef, num_clusters + 1)
             cluster_log_weights[1:num_clusters] = compute_existing_cluster_log_predictives(test_observation, clusters, 
-                                                                                                 sufficient_stats, cluster_parameters)
-            cluster_log_weights[num_clusters+1] = new_cluster_log_predictive(sufficient_stats, cluster_parameters, test_observation)
+                                                                                           sufficient_stats, cluster_parameters,
+                                                                                           aux_variables)
+            cluster_log_weights[num_clusters+1] = new_cluster_log_predictive(sufficient_stats, cluster_parameters, aux_variables,
+                                                                             test_observation)
             cluster_log_probabilities = log.(compute_normalized_weights(cluster_log_weights))
 
             data_log_predictives = compute_data_log_predictives(test_datum, choices, sufficient_stats.data, data_parameters)
