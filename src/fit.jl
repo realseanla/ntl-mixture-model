@@ -211,11 +211,11 @@ function gibbs_proposal(observation, data, sufficient_stats, model::Changepoint{
     weights = Array{Float64}(undef, length(choices))
 
     for (index, changepoint) in enumerate(changepoints) 
-        weights[index] = existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, changepoint,
-                                                         auxillary_variables) 
+        weights[index] = existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, auxillary_variables, 
+                                                         observation, changepoint)
     end
-    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, observation, 
-                                                             auxillary_variables)
+    weights[num_changepoints+1] = new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, auxillary_variables, 
+                                                             observation)
 
     weights += compute_data_log_predictives(observation, choices, data, sufficient_stats.data, data_parameters)
 
@@ -841,7 +841,7 @@ end
 
 function compute_arrival_distribution_posterior(sufficient_stats::SufficientStatistics{C, D},
                                                 cluster_parameters::ParametricArrivalsClusterParameters{T}) where
-                                                {T <: PoissonArrivals, C <: MixtureSufficientStatistics, D}
+                                                {T <: PoissonArrivals, C, D}
     last_cluster = findlast(sufficient_stats.cluster.clusters)
     num_clusters = count(sufficient_stats.cluster.clusters)
     posterior_alpha = cluster_parameters.arrival_distribution.alpha + last_cluster - 1
@@ -902,6 +902,76 @@ function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics{
     return log(phi_posterior[2]) - log(sum(phi_posterior))
 end
 
+function new_cluster_log_predictive(sufficient_stats::SufficientStatistics{C, D}, cluster_parameters::NtlParameters{A}, 
+                                    auxillary_variables, observation::Int64) where 
+                                    {A <: PoissonArrivals, C <: ChangepointSufficientStatistics, D}
+    n = sufficient_stats.n
+    last_arrival_time = auxillary_variables["last_arrival_time"]
+    num_clusters = count(sufficient_stats.cluster.clusters)
+
+    next_changepoint = observation + 1
+    if next_changepoint === findlast(sufficient_stats.cluster.clusters) || (next_changepoint === n + 1) 
+        changepoint_after_next = last_arrival_time
+    else
+        changepoint_after_next = findfirst(sufficient_stats.cluster.clusters .& (1:n .> next_changepoint))
+    end
+    next_interarrival = changepoint_after_next - next_changepoint
+
+    if observation === 1
+        previous_changepoint = 0
+    else
+        previous_changepoint = findlast(sufficient_stats.cluster.clusters .& (1:n .< observation))
+    end
+    previous_interarrival = observation - previous_changepoint
+
+    posterior_alpha = last_arrival_time - 1 + cluster_parameters.arrival_distribution.alpha
+    posterior_beta = num_clusters + 2 + cluster_parameters.arrival_distribution.beta 
+    log_predictive = -posterior_alpha*log(posterior_beta)
+    log_predictive += -(logfactorial(next_interarrival - 1) + logfactorial(previous_interarrival - 1))
+
+    return log_predictive
+end
+
+function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics{C, D}, cluster_parameters::NtlParameters{A}, 
+                                         auxillary_variables, observation::Int64, changepoint::Int64) where 
+                                         {A <: PoissonArrivals, C <: ChangepointSufficientStatistics, D}
+    n = sufficient_stats.n
+    last_arrival_time = auxillary_variables["last_arrival_time"]
+    num_clusters = count(sufficient_stats.cluster.clusters)
+    posterior_alpha = last_arrival_time - 1 + cluster_parameters.arrival_distribution.alpha 
+    posterior_beta = num_clusters + 1 + cluster_parameters.arrival_distribution.beta 
+
+    log_predictive = -posterior_alpha*log(posterior_beta)
+
+    if changepoint - 1 === observation
+        if changepoint === findlast(sufficient_stats.cluster.clusters)
+            changepoint_after_next = last_arrival_time
+        else
+            changepoint_after_next = findfirst(sufficient_stats.cluster.clusters .& (1:n .> changepoint))
+        end
+        next_interarrival = changepoint_after_next - observation
+
+        if observation === 1
+            previous_changepoint = 0
+        else
+            previous_changepoint = findlast(sufficient_stats.cluster.clusters .& (1:n .< observation))
+        end
+        prev_interarrival = observation - previous_changepoint
+    else
+        next_changepoint = observation + 1
+        if next_changepoint === findlast(sufficient_stats.cluster.clusters) || (next_changepoint === n + 1)
+            changepoint_after_next = last_arrival_time
+        else
+            changepoint_after_next = findfirst(sufficient_stats.cluster.clusters .& (1:n .> next_changepoint))
+        end
+        next_interarrival = changepoint_after_next - next_changepoint
+
+        prev_interarrival = next_changepoint - changepoint
+    end
+    log_predictive += -(logfactorial(next_interarrival - 1) + logfactorial(prev_interarrival - 1))
+
+    return log_predictive
+end
 ### Mixture cluster log predictives 
 
 function new_cluster_log_predictive(sufficient_stats::SufficientStatistics{C, D}, cluster_parameters::DpParameters, 
@@ -927,8 +997,9 @@ function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics{
     return log(phi_posterior[2]) - log(sum(phi_posterior))
 end
 
-function new_cluster_log_predictive(sufficient_stats, cluster_parameters::NtlParameters{A}, auxillary_variables,
-                                    observation::Int64) where {A <: PoissonArrivals}
+function new_cluster_log_predictive(sufficient_stats::SufficientStatistics{C, D}, cluster_parameters::NtlParameters{A}, 
+                                    auxillary_variables, observation::Int64) where 
+                                    {A <: PoissonArrivals, C <: MixtureSufficientStatistics, D}
     n = sufficient_stats.n
     last_arrival_time = auxillary_variables["last_arrival_time"]
     num_clusters = count(sufficient_stats.cluster.clusters)
@@ -957,8 +1028,9 @@ function new_cluster_log_predictive(sufficient_stats, cluster_parameters::NtlPar
     return log_predictive
 end
 
-function existing_cluster_log_predictive(sufficient_stats, cluster_parameters::NtlParameters{A}, auxillary_variables, 
-                                         observation::Int64, cluster::Int64) where {A <: PoissonArrivals}
+function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics{C, D}, cluster_parameters::NtlParameters{A}, 
+                                         auxillary_variables, observation::Int64, cluster::Int64) where 
+                                         {A <: PoissonArrivals, C <: MixtureSufficientStatistics, D}
     n = sufficient_stats.n
     last_arrival_time = auxillary_variables["last_arrival_time"]
     num_clusters = count(sufficient_stats.cluster.clusters)
