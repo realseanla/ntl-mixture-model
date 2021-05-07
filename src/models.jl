@@ -13,8 +13,13 @@ export ChangepointSufficientStatistics, Changepoint
 export BetaNtlParameters, BetaNtlSufficientStatistics, ParametricArrivalsClusterParameters
 export PitmanYorArrivals
 export SufficientStatistics
+export AuxillaryVariables, ArrivalsAuxillaryVariables, DataAuxillaryVariables
+export GeometricAuxillaryVariables, PoissonAuxillaryVariables, DpAuxillaryVariables
+export GaussianAuxillaryVariables, GaussianWishartAuxillaryVariables, MultinomialAuxillaryVariables
+export FiniteTopicModelAuxillaryVariables
 
 using SparseArrays
+using DataStructures
 
 abstract type DataParameters end
 
@@ -70,6 +75,19 @@ struct MultinomialParameters <: DataParameters
     end
     function MultinomialParameters(prior_dirichlet_scale::Vector)
         return MultinomialParameters(1, prior_dirichlet_scale)
+    end
+end
+
+struct FiniteTopicModelParameters <: DataParameters
+    num_topics::Int64
+    num_words::Int64
+    topic_parameter::Float64
+    word_parameter::Float64
+    function FiniteTopicModelParameters(num_topics, num_words, topic_parameter, word_parameter)
+        return new(num_topics, num_words, topic_parameter, word_parameter)
+    end
+    function FiniteTopicModelParameters(num_topics, topic_parameter, word_parameter)
+        return new(num_topics, -1, topic_parameter, word_parameter)
     end
 end
 
@@ -158,6 +176,13 @@ end
 
 abstract type DataSufficientStatistics end
 
+struct FiniteTopicModelSufficientStatistics <: DataSufficientStatistics
+    cluster_topic_frequencies::Matrix{Int64}
+    cluster_topic_posterior::Matrix{Float64}
+    topic_token_frequencies::Matrix{Int64}
+    topic_token_posterior::Matrix{Float64}
+end
+
 struct GaussianSufficientStatistics <: DataSufficientStatistics
     data_means::Matrix{Float64}
     data_precision_quadratic_sums::Vector{Float64}
@@ -223,6 +248,34 @@ end
 struct Changepoint{C<:Union{ClusterParameters, ParametricArrivalsClusterParameters}, D<:DataParameters} <: Model
     cluster_parameters::C
     data_parameters::D
+end
+
+abstract type ArrivalsAuxillaryVariables end
+
+struct GeometricAuxillaryVariables <: ArrivalsAuxillaryVariables end
+
+mutable struct PoissonAuxillaryVariables <: ArrivalsAuxillaryVariables
+    last_arrival_time::Int64
+end
+
+struct DpAuxillaryVariables <: ArrivalsAuxillaryVariables end
+
+abstract type DataAuxillaryVariables end
+
+struct GaussianAuxillaryVariables <: DataAuxillaryVariables end
+
+struct MultinomialAuxillaryVariables <: DataAuxillaryVariables end
+
+struct GaussianWishartAuxillaryVariables <: DataAuxillaryVariables end 
+
+struct FiniteTopicModelAuxillaryVariables <: DataAuxillaryVariables 
+    token_topic_assignments::Matrix{Dict}
+    document_topic_frequencies::Matrix 
+end
+
+struct AuxillaryVariables{A <: ArrivalsAuxillaryVariables, D <: DataAuxillaryVariables}
+    arrivals::A
+    data::D
 end
 
 end

@@ -1,6 +1,7 @@
 module Generate
 
 using ..Models: ClusterParameters, DataParameters, GaussianParameters, GeometricArrivals, NtlParameters
+using ..Models: FiniteTopicModelParameters
 using ..Models: GaussianWishartParameters, PoissonArrivals
 using ..Models: ArrivalDistribution, MultinomialParameters
 using ..Models: Model, Mixture, Changepoint, HiddenMarkovModel
@@ -146,6 +147,40 @@ end
 function sample_cluster_parameters(num_clusters, data_parameters::MultinomialParameters)
     dist = Dirichlet(data_parameters.prior_dirichlet_scale)
     return rand(dist, num_clusters)
+end
+
+function sample_cluster_parameters(num_clusters, data_parameters::FiniteTopicModelParameters)
+    num_topics = data_parameters.num_topics
+    num_words = data_parameters.num_words
+    word_parameter = data_parameters.word_parameter
+    topic_word_distributions = Matrix{Int64}(undef, num_words, num_topics)
+    for topic = 1:num_topic
+        word_prior = Dirichlet(num_words, word_parameter)
+        word_distribution_parameter = rand(word_prior, 1)
+        topic_word_distributions[:, topic] = word_distribution_parameter
+    end
+    return topic_word_distributions
+end
+
+function sample_data(cluster, num_assigned, topic_word_distributions, data_parameters::FiniteTopicModelParameters)
+    num_topics = data_parameters.num_topics
+    topic_parameter = data_parameters.topic_parameter
+    topic_prior = Dirichlet(num_topics, topic_parameter)
+    topic_distribution_paramter = rand(topic_prior, 1)
+    num_words = data_parameters.num_words
+    topic_distribution = Multinomial(num_words, topic_distribution_parameter)
+    topics = rand(topic_distribution, num_assigned)
+
+    words = Vector{Int64}(undef, num_words)
+    for i = 1:num_words
+        topic = topics[i]
+        word_distribution_parameter = vec(topic_word_distributions[:, topic])
+        word_distribution = Multinomial(1, word_distribution_parameter)
+        word = rand(word_distribution, 1)[1]
+        words[i] = word
+    end
+
+    return words
 end
 
 function sample_data(cluster, num_assigned, location_scale_parameters::Vector{LocationScale}, ::GaussianWishartParameters)

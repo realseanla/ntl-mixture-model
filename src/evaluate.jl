@@ -1,18 +1,19 @@
 module Evaluate
+    using ..Models: Mixture
     using ..Fitter: prepare_sufficient_statistics, update_cluster_sufficient_statistics!, update_data_sufficient_statistics!
     using ..Fitter: compute_data_posterior_parameters!, get_clusters, compute_existing_cluster_log_predictives, new_cluster_log_predictive
-    using ..Fitter: compute_data_log_predictives, prepare_auxillary_variables
+    using ..Fitter: compute_data_log_predictives, prepare_auxillary_variables, gibbs_sample!
     using ..Utils: compute_normalized_weights
 
     using Statistics
 
-    function update_sufficient_statistics!(sufficient_stats, datum, cluster, model; update_type="add")
+    function update_sufficient_statistics!(sufficient_stats, observation, cluster, model, data, aux_var; update_type="add")
         update_cluster_sufficient_statistics!(sufficient_stats, cluster, update_type=update_type)
-        update_data_sufficient_statistics!(sufficient_stats, cluster, datum, model, update_type=update_type)
+        update_data_sufficient_statistics!(sufficient_stats, cluster, observation, model, data, aux_var, update_type=update_type)
         compute_data_posterior_parameters!(cluster, sufficient_stats, model.data_parameters)
     end
 
-    function evaluate(test_datum::Vector{T}, posterior, training_data, model) where {T <: Real}
+    function evaluate(test_datum::Vector{T}, posterior, training_data, model::Mixture) where {T <: Real}
         data_parameters = model.data_parameters
         cluster_parameters = model.cluster_parameters
         num_iterations = size(posterior)[2]
@@ -23,10 +24,11 @@ module Evaluate
         for iteration = 1:num_iterations
             sufficient_stats = prepare_sufficient_statistics(model, training_data) 
             for observation = 1:num_observations
-                datum = training_data[:, observation]
                 cluster = posterior[observation, iteration]
-                update_sufficient_statistics!(sufficient_stats, datum, cluster, model, update_type="add")
+                update_sufficient_statistics!(sufficient_stats, observation, cluster, model, training_data, aux_variables,
+                                              update_type="add")
             end
+            gibbs_sample!(aux_variables, sufficient_stats, model, training_data)
             clusters = get_clusters(sufficient_stats.cluster) 
             num_clusters = length(clusters)
             choices = Array{Int64}(undef, num_clusters+1)
