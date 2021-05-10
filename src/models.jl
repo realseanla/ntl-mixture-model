@@ -148,6 +148,7 @@ abstract type ClusterSufficientStatistics end
 
 struct MixtureSufficientStatistics <: ClusterSufficientStatistics
     num_observations::Vector{Int64}
+    cumulative_num_observations::FenwickTree{Int64}
     clusters::BitArray
 end
 

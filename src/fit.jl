@@ -494,9 +494,10 @@ end
 
 function prepare_cluster_sufficient_statistics(::Mixture, n::Int64)
     cluster_num_observations = Vector{Int64}(zeros(Int64, n))
+    cumulative_num_observations = FenwickTree{Int64}(n)
     clusters = BitArray(undef, n)
     clusters .= false
-    cluster_sufficient_stats = MixtureSufficientStatistics(cluster_num_observations, clusters)
+    cluster_sufficient_stats = MixtureSufficientStatistics(cluster_num_observations, cumulative_num_observations, clusters)
     return cluster_sufficient_stats
 end
 
@@ -543,16 +544,10 @@ function compute_data_log_likelihood(sufficient_stats::SufficientStatistics, dat
     return log_likelihood
 end
 
-function compute_cluster_assignment_log_likelihood(cluster::Int64, num_observations::Vector{Int64},
-                                                   cluster_parameters::NtlParameters{T}) where {T <: ArrivalDistribution}
-    psi_posterior = compute_stick_breaking_posterior(cluster, num_observations, cluster_parameters.prior)
-    return logbeta(psi_posterior) - logbeta(cluster_parameters.prior)
-end
-
 function compute_cluster_assignment_log_likelihood(cluster::Int64, cluster_sufficient_stats::MixtureSufficientStatistics, 
                                                    cluster_parameters::NtlParameters{T}) where {T <: ArrivalDistribution}
-    return compute_cluster_assignment_log_likelihood(cluster, cluster_sufficient_stats.num_observations, 
-                                                     cluster_parameters)
+    psi_posterior = compute_stick_breaking_posterior(cluster, cluster_sufficient_stats, cluster_parameters.prior)
+    return logbeta(psi_posterior) - logbeta(cluster_parameters.prior)
 end
 
 function compute_arrivals_log_likelihood(sufficient_stats::SufficientStatistics, 
@@ -761,15 +756,25 @@ function update_data_sufficient_statistics!(sufficient_stats::SufficientStatisti
     sufficient_stats.data.total_counts[:, cluster] = cluster_counts
 end
 
-function update_cluster_sufficient_statistics!(sufficient_stats::SufficientStatistics, cluster::Int64; 
-                                               update_type::String="add")
+function update_data_sufficient_statistics!(sufficient_stats::SufficientStatistics{C, D}, clusters::Vector{Int64}) where 
+                                           {C, D <: MultinomialSufficientStatistics}
+    @assertion length(clusters) === 2
+    new_cluster_counts = sum(sufficient_stats.data.total_counts[:, clusters], dims=2)
+    n = sufficient_stats.n
+    sufficient_stats.data.total_counts[:, n+1] = new_cluster_counts
+end
+
+function update_cluster_sufficient_statistics!(sufficient_stats::SufficientStatistics{C, D}, cluster::Int64; 
+                                               update_type::String="add") where {C <: MixtureSufficientStatistics, D}
     if update_type === "add"
         sufficient_stats.cluster.num_observations[cluster] += 1
+        inc!(sufficient_stats.cluster.cumulative_num_observations, cluster, 1)
         if sufficient_stats.cluster.num_observations[cluster] === 1
             sufficient_stats.cluster.clusters[cluster] = true
         end
     elseif update_type === "remove"
         sufficient_stats.cluster.num_observations[cluster] -= 1
+        dec!(sufficient_stats.cluster.cumulative_num_observations, cluster, 1)
         if sufficient_stats.cluster.num_observations[cluster] === 0
             sufficient_stats.cluster.clusters[cluster] = false
         end
@@ -786,9 +791,12 @@ end
 
 function update_cluster_stats_new_birth_time!(cluster_sufficient_stats::MixtureSufficientStatistics,
                                               new_time::Int64, old_time::Int64)
+    num_observations = cluster_sufficient_stats.num_observations[old_time]
     update_cluster_stats_new_birth_time!(cluster_sufficient_stats.num_observations, new_time, old_time)
     cluster_sufficient_stats.clusters[new_time] = true
     cluster_sufficient_stats.clusters[old_time] = false
+    dec!(cluster_sufficient_stats.cumulative_num_observations, old_time, num_observations)
+    inc!(cluster_sufficient_stats.cumulative_num_observations, new_time, num_observations)
 end
 
 function update_cluster_stats_new_birth_time!(cluster_sufficient_stats::ChangepointSufficientStatistics,
@@ -1039,7 +1047,7 @@ end
 function new_cluster_log_predictive(sufficient_stats::SufficientStatistics{C, D}, cluster_parameters::NtlParameters{T},
                                     auxillary_variables, observation::Int64) where 
                                     {T <: GeometricArrivals, C <: MixtureSufficientStatistics, D}
-    num_complement = compute_num_complement(observation, sufficient_stats.cluster.num_observations)
+    num_complement = compute_num_complement(observation, sufficient_stats.cluster)
     psi_posterior = deepcopy(cluster_parameters.prior)
     psi_posterior[2] += num_complement
     phi_posterior = compute_arrival_distribution_posterior(sufficient_stats, cluster_parameters)
@@ -1133,22 +1141,21 @@ end
 
 ### End mixture cluster log predictives
 
-function compute_num_complement(cluster::Int64, cluster_num_observations::Vector{Int64}; 
+function compute_num_complement(cluster::Int64, cluster_suff_stats::MixtureSufficientStatistics;
                                 missing_observation::Union{Int64, Nothing}=nothing)
-    younger_clusters = 1:(cluster-1)
-    sum_of_younger_clusters = sum(cluster_num_observations[younger_clusters])
-    num_complement = sum(cluster_num_observations[younger_clusters]) - (cluster - 1)
+    sum_of_older_clusters = prefixsum(cluster_suff_stats.cumulative_num_observations, cluster-1)
+    num_complement = sum_of_older_clusters - (cluster - 1)
     if missing_observation !== nothing && missing_observation < cluster
         num_complement += 1
     end
     return num_complement
 end
 
-function compute_stick_breaking_posterior(cluster::Int64, num_observations::Vector{Int64}, beta_prior::Vector{T};
+function compute_stick_breaking_posterior(cluster::Int64, cluster_suff_stats::MixtureSufficientStatistics, beta_prior::Vector{T};
                                           missing_observation::Union{Int64, Nothing}=nothing) where {T <: Real}
     posterior = deepcopy(beta_prior)
-    posterior[1] += num_observations[cluster] - 1
-    posterior[2] += compute_num_complement(cluster, num_observations, missing_observation=missing_observation)
+    posterior[1] += cluster_suff_stats.num_observations[cluster] - 1
+    posterior[2] += compute_num_complement(cluster, cluster_suff_stats, missing_observation=missing_observation)
     posterior[posterior .<= 0] .= 1
     return posterior
 end
@@ -1156,7 +1163,7 @@ end
 function compute_stick_breaking_posterior(cluster::Int64, sufficient_stats::SufficientStatistics, 
                                           ntl_parameters::ParametricArrivalsClusterParameters; 
                                           missing_observation::Union{Int64, Nothing}=nothing)
-    posterior = compute_stick_breaking_posterior(cluster, sufficient_stats.cluster.num_observations, 
+    posterior = compute_stick_breaking_posterior(cluster, sufficient_stats.cluster, 
                                                  ntl_parameters.prior, missing_observation=missing_observation)
     return posterior
 end
@@ -1171,10 +1178,10 @@ function compute_cluster_log_predictives(observation::Int64, clusters::Vector{In
     n = maximum([n, observation])
     cluster_log_weights = zeros(Float64, n)
     complement_log_weights = zeros(Float64, n)
+    complement_log_weights_tree = FenwickTree{Float64}(n)
     psi_parameters = Array{Int64}(undef, 2, n)
     logbetas = Array{Float64}(undef, n)
-    new_num_complement = compute_num_complement(observation, ntl_sufficient_stats.num_observations, 
-                                                missing_observation=observation)
+    new_num_complement = compute_num_complement(observation, ntl_sufficient_stats, missing_observation=observation)
     younger_cluster_new_psi = Array{Float64}(undef, 2)
     cluster_new_psi = Array{Float64}(undef, 2)
 
@@ -1186,6 +1193,7 @@ function compute_cluster_log_predictives(observation::Int64, clusters::Vector{In
             log_denom = log(sum(cluster_psi))
             cluster_log_weights[cluster] = log(cluster_psi[1]) - log_denom
             complement_log_weights[cluster] = log(cluster_psi[2]) - log_denom
+            inc!(complement_log_weights_tree, cluster, complement_log_weights[cluster])
             if observation < cluster
                 logbetas[cluster] = logbeta(cluster_psi)
             end
@@ -1200,7 +1208,8 @@ function compute_cluster_log_predictives(observation::Int64, clusters::Vector{In
             end
             # Clusters younger than the current cluster
             younger_clusters = (cluster+1):(observation-1)
-            log_weight += sum(complement_log_weights[younger_clusters])
+            log_weight += prefixsum(complement_log_weights_tree, observation-1) - prefixsum(complement_log_weights_tree, cluster)
+            #log_weight += sum(complement_log_weights[younger_clusters])
             log_weights[i] = log_weight
         else # observation < cluster
             cluster_num_obs = ntl_sufficient_stats.num_observations[cluster]
