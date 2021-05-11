@@ -11,7 +11,8 @@ using ..Models: ChangepointSufficientStatistics, PitmanYorArrivals, SufficientSt
 using ..Models: ArrivalDistribution
 using ..Samplers: Sampler, GibbsSampler, SequentialMonteCarlo, SequentialImportanceSampler
 using ..Samplers: MetropolisWithinGibbsSampler, MetropolisHastingsSampler
-using ..Utils: logbeta, logmvbeta, log_multinomial_coeff, gumbel_max, isnothing, compute_normalized_weights, effective_sample_size, hist
+using ..Utils: logbeta, logmvbeta, log_multinomial_coeff, gumbel_max, isnothing, compute_normalized_weights
+using ..Utils: effective_sample_size, hist
 using ..Utils: mvt_logpdf, logfactorial
 
 using Distributions
@@ -64,7 +65,6 @@ end
 
 function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) where {T <: Real}
     n = size(data)[2]
-    dim = size(data)[1]
     instances = Array{Int64}(undef, n, sampler.num_iterations + sampler.num_burn_in)
     log_likelihoods = Vector{Float64}(undef, sampler.num_iterations + sampler.num_burn_in)
     n = size(data)[2]
@@ -184,7 +184,7 @@ end
 
 function gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model::Mixture, auxillary_variables)
     remove_observation!(observation, instances, iteration, data, sufficient_stats, model)
-    (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model, auxillary_variables)
+    (cluster, _) = gibbs_proposal(observation, data, sufficient_stats, model, auxillary_variables)
     add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model)
 end
 
@@ -192,7 +192,7 @@ function gibbs_sample!(observation, instances, iteration, data, sufficient_stats
     n = sufficient_stats.n
     if observation in [1,n] || (instances[observation-1, iteration] !== instances[observation+1, iteration])
         remove_observation!(observation, instances, iteration, data, sufficient_stats, model)
-        (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model, auxillary_variables)
+        (cluster, _) = gibbs_proposal(observation, data, sufficient_stats, model, auxillary_variables)
         add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model)
     end
 end
@@ -222,7 +222,6 @@ end
 function gibbs_proposal(observation, data, sufficient_stats, model::Changepoint{C, D}, auxillary_variables) where 
                        {C <: DpParameters, D}
     data_parameters = model.data_parameters
-    cluster_parameters = model.cluster_parameters
     n = sufficient_stats.n
 
     changepoints = get_changepoints(sufficient_stats, observation)
@@ -266,8 +265,6 @@ end
 function gibbs_proposal(observation, data, sufficient_stats, model::Changepoint{C, D}, auxillary_variables) where 
                         {C <: NtlParameters, D}
     data_parameters = model.data_parameters
-    cluster_parameters = model.cluster_parameters
-    n = sufficient_stats.n
 
     changepoints = get_changepoints(sufficient_stats, observation)
     num_changepoints = length(changepoints)
@@ -296,8 +293,6 @@ end
 
 function propose(observation, data, particles, particle, sufficient_stats, model::Changepoint, auxillary_variables)
     data_parameters = model.data_parameters
-    cluster_parameters = model.cluster_parameters
-    n = sufficient_stats.n
 
     changepoints = get_changepoints(sufficient_stats, observation)
     num_changepoints = length(changepoints)
@@ -323,7 +318,6 @@ end
 function fit(data, model, sampler::Union{SequentialMonteCarlo, SequentialImportanceSampler})
     num_particles = sampler.num_particles
     n = size(data)[2]
-    dim = size(data)[1]
     particles = Array{Int64}(undef, n, num_particles)
     particles .= n+1
     num_particles = size(particles)[2]
@@ -502,7 +496,6 @@ function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::S
     posterior_mean = vec(sufficient_stats.data.posterior_means[:, cluster])
     dim = length(posterior_mean)
     posterior_covariance = reshape(sufficient_stats.data.posterior_covs[:, cluster], dim, dim)
-    posterior_precision = inv(posterior_covariance)
     prior_mean = data_parameters.prior_mean
     prior_covariance = data_parameters.prior_covariance
     prior_precision = inv(prior_covariance)
@@ -572,7 +565,7 @@ function compute_arrivals_log_likelihood(sufficient_stats::SufficientStatistics,
 end
 
 function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D},
-                                           cluster_parameters::DpParameters) where {T, C <: MixtureSufficientStatistics, D}
+                                           cluster_parameters::DpParameters) where {C <: MixtureSufficientStatistics, D}
     num_observations = sufficient_stats.cluster.num_observations
     num_observations = num_observations[num_observations .> 0]
     num_clusters = length(num_observations)
@@ -625,7 +618,7 @@ end
 
 function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D}, 
                                            cluster_parameters::DpParameters) where 
-                                           {T, C <: ChangepointSufficientStatistics, D}
+                                           {C <: ChangepointSufficientStatistics, D}
     return NaN
 end
 
@@ -1296,7 +1289,6 @@ function compute_data_posterior_parameters!(cluster::Int64, sufficient_stats::Su
                                             data_parameters::GaussianParameters)
     data_mean = vec(sufficient_stats.data.data_means[:, cluster])
     n = sufficient_stats.cluster.num_observations[cluster]
-    dim = length(data_mean)
     prior_mean = data_parameters.prior_mean
     prior_cov = data_parameters.prior_covariance
     prior_precision = inv(prior_cov)
@@ -1375,7 +1367,6 @@ function compute_data_log_predictives(datum::Vector{Float64}, clusters::Vector{I
                                      data_sufficient_stats::DataSufficientStatistics,
                                      data_parameters::DataParameters)
     log_predictive = Array{Float64}(undef, length(clusters))
-    dim = length(datum)
     for (index, cluster) = enumerate(clusters)
         log_predictive[index] = data_log_predictive(datum, cluster, data_sufficient_stats, data_parameters)
     end
@@ -1424,7 +1415,7 @@ function gibbs_sample!(observation, instances, iteration, data, sufficient_stats
     remove_observation!(observation, instances, iteration, data, sufficient_stats, model)
     previous_state = (observation > 1) ? instances[observation-1, iteration] : n+1
     next_state = (observation < n) ? instances[observation+1, iteration] : n+1
-    (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model, previous_state, next_state, auxillary_variables)
+    (cluster, _) = gibbs_proposal(observation, data, sufficient_stats, model, previous_state, next_state, auxillary_variables)
     add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model, 
                      update_next_cluster=true)
 end
