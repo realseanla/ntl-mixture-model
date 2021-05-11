@@ -106,7 +106,7 @@ function propose_cluster(previous_cluster, observation, sufficient_stats, sample
     start_index = maximum([1, center_index - sampler.cluster_radius])
     stop_index = minimum([num_clusters, center_index + sampler.cluster_radius])
     sampled_index = rand(start_index:stop_index)
-    return (clusters[sampled_index], -log(num_clusters))
+    return (clusters[sampled_index], -log(stop_index - start_index))
 end
 
 function compute_cluster_log_predictive(observation, cluster, sufficient_stats, model)
