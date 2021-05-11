@@ -10,6 +10,7 @@ using ..Models: ParametricArrivalsClusterParameters, BetaNtlParameters
 using ..Models: ChangepointSufficientStatistics, PitmanYorArrivals, SufficientStatistics 
 using ..Models: ArrivalDistribution
 using ..Samplers: Sampler, GibbsSampler, SequentialMonteCarlo, SequentialImportanceSampler
+using ..Samplers: MetropolisWithinGibbsSampler, MetropolisHastingsSampler
 using ..Utils: logbeta, logmvbeta, log_multinomial_coeff, gumbel_max, isnothing, compute_normalized_weights, effective_sample_size, hist
 using ..Utils: mvt_logpdf, logfactorial
 
@@ -61,27 +62,93 @@ function random_initial_assignment!(instances, data, sufficient_stats, model::Ch
     end
 end
 
-function fit(data::Matrix{T}, model, sampler::GibbsSampler) where {T <: Real}
+function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) where {T <: Real}
     n = size(data)[2]
     dim = size(data)[1]
-    instances = Array{Int64}(undef, n, sampler.num_iterations+1)
-    log_likelihoods = Vector{Float64}(undef, sampler.num_iterations+1)
+    instances = Array{Int64}(undef, n, sampler.num_iterations + sampler.num_burn_in)
+    log_likelihoods = Vector{Float64}(undef, sampler.num_iterations + sampler.num_burn_in)
     n = size(data)[2]
     sufficient_stats = prepare_sufficient_statistics(model, data)
     auxillary_variables = prepare_auxillary_variables(model, data)
     # Assign all of the observations to the first cluster
     random_initial_assignment!(instances, data, sufficient_stats, model)
     log_likelihoods[1] = compute_joint_log_likelihood(sufficient_stats, model)
-    for iteration = ProgressBar(2:sampler.num_iterations+1)
+    for iteration = ProgressBar(2:(sampler.num_iterations + sampler.num_burn_in))
         instances[:, iteration] = instances[:, iteration-1]
         for observation = 1:n
-            gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
-            gibbs_sample!(auxillary_variables, sufficient_stats, model)
-            @assertion sum(sufficient_stats.cluster.num_observations[1:n]) === n
+            sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler)
         end
+        gibbs_sample!(auxillary_variables, sufficient_stats, model)
         log_likelihoods[iteration] = compute_joint_log_likelihood(sufficient_stats, model)
     end
-    return (instances[:, 2:end], log_likelihoods[2:end])
+    return (instances[:, (sampler.num_burn_in+1):end], log_likelihoods[(sampler.num_burn_in+1):end])
+end
+
+function sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler::GibbsSampler)
+    gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
+end
+
+function propose_cluster(previous_cluster, observation, sufficient_stats, sampler::MetropolisHastingsSampler)
+    start_index = maximum([1, observation - sampler.observation_window])
+    clusters = findall(sufficient_stats.cluster.clusters[start_index:observation-1])
+    if observation - sampler.observation_window > 0
+        clusters .+= (observation - sampler.observation_window - 1)
+    end
+    if !(previous_cluster in clusters)
+        push!(clusters, previous_cluster)
+    end
+    if previous_cluster !== observation 
+        push!(clusters, observation)
+    end
+    sort!(clusters)
+    num_clusters = length(clusters)
+    center_index = findfirst(clusters .=== previous_cluster)
+    start_index = maximum([1, center_index - sampler.cluster_radius])
+    stop_index = minimum([num_clusters, center_index + sampler.cluster_radius])
+    sampled_index = rand(start_index:stop_index)
+    return (clusters[sampled_index], -log(num_clusters))
+end
+
+function compute_cluster_log_predictive(observation, cluster, sufficient_stats, model)
+    log_predictive = 0
+    cluster_psi = compute_stick_breaking_posterior(cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
+    log_predictive += log(cluster_psi[1]) - log(sum(cluster_psi))
+    younger_clusters = (cluster+1):(observation-1)
+    for younger_cluster = younger_clusters 
+        younger_cluster_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
+        log_predictive += log(younger_cluster_psi[2]) - log(sum(younger_cluster_psi))
+    end
+    return log_predictive
+end
+
+function sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler::MetropolisHastingsSampler)
+    previous_cluster = instances[observation, iteration]
+    if (observation > previous_cluster) || (observation === previous_cluster && sufficient_stats.cluster.num_observations[previous_cluster] === 1)
+        remove_observation!(observation, instances, iteration, data, sufficient_stats, model)
+        datum = data[:, observation]
+
+        previous_cluster_log_weight = data_log_predictive(datum, previous_cluster, sufficient_stats.data, model.data_parameters)
+        previous_cluster_log_weight += compute_cluster_log_predictive(observation, previous_cluster, sufficient_stats, model)
+
+        # Propose a new cluster for the current observation
+        (proposed_cluster, proposal_log_weight) = propose_cluster(previous_cluster, observation, sufficient_stats, sampler)
+        # Compute the joint likelihood of the proposal
+        proposed_cluster_log_weight = data_log_predictive(datum, proposed_cluster, sufficient_stats.data, model.data_parameters)
+        proposed_cluster_log_weight += compute_cluster_log_predictive(observation, proposed_cluster, sufficient_stats, model)
+
+        (_, previous_cluster_proposal_log_weight) = propose_cluster(proposed_cluster, observation, sufficient_stats, sampler) 
+
+        log_acceptance_ratio = proposed_cluster_log_weight - previous_cluster_log_weight
+        log_acceptance_ratio += (previous_cluster_proposal_log_weight - proposal_log_weight)
+
+        log_uniform_variate = log(rand(Uniform(0, 1), 1)[1])
+        if log_uniform_variate < log_acceptance_ratio
+            final_cluster = proposed_cluster
+        else
+            final_cluster = previous_cluster
+        end
+        add_observation!(observation, final_cluster, instances, iteration, data, sufficient_stats, model)
+    end
 end
 
 function gibbs_sample!(auxillary_variables::Dict{String, Float64}, sufficient_stats::SufficientStatistics, 
