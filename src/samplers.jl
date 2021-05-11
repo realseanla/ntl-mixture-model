@@ -1,23 +1,33 @@
 module Samplers
 
 export GibbsSampler, SequentialMonteCarlo, SequentialImportanceSampler, MetropolisHastingsSampler
+export MetropolisHastingsSampler, MetropolisWithinGibbsSampler
 
 abstract type Sampler end
 
-struct GibbsSampler <: Sampler
+abstract type MetropolisWithinGibbsSampler <: Sampler  end
+
+struct GibbsSampler <: MetropolisWithinGibbsSampler
     num_iterations::Int64
     num_burn_in::Int64
     function GibbsSampler(;num_iterations::Int64=1000, num_burn_in::Int64=0)
         if num_iterations < 1
             error("Number of iterations should be positive.")
         end
-        if num_burn_in >= num_iterations
-            error("Burn-in should be less than number of iterations.")
-        end
         return new(num_iterations, num_burn_in)
     end
     function GibbsSampler(;num_iterations::Int64=1000)
         return new(num_iterations, 0)
+    end
+end
+
+struct MetropolisHastingsSampler <: MetropolisWithinGibbsSampler 
+    num_iterations::Int64 
+    num_burn_in::Int64
+    cluster_radius::Int64 
+    observation_window::Int64
+    function MetropolisHastingsSampler(;num_iterations=1000, num_burn_in=1000, cluster_radius=5, observation_window=100)
+        return new(num_iterations, num_burn_in, cluster_radius, observation_window)
     end
 end
 
@@ -47,12 +57,6 @@ struct SequentialImportanceSampler <: Sampler
     function SequentialImportanceSampler(;num_particles=1000)
         return new(num_particles)
     end
-end
-
-struct MetropolisHastingsSampler <: Sampler 
-    num_iterations::Int64 
-    num_burn_in::Int64
-    radius::Int64 
 end
 
 end

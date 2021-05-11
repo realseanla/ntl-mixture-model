@@ -14,7 +14,9 @@ using ..Models: GaussianAuxillaryVariables, GaussianWishartAuxillaryVariables, M
 using ..Models: FiniteTopicModelAuxillaryVariables, PoissonAuxillaryVariables, GeometricAuxillaryVariables
 using ..Models: DpAuxillaryVariables
 using ..Samplers: Sampler, GibbsSampler, SequentialMonteCarlo, SequentialImportanceSampler
-using ..Utils: logbeta, logmvbeta, log_multinomial_coeff, gumbel_max, isnothing, compute_normalized_weights, effective_sample_size, hist
+using ..Samplers: MetropolisWithinGibbsSampler, MetropolisHastingsSampler
+using ..Utils: logbeta, logmvbeta, log_multinomial_coeff, gumbel_max, isnothing, compute_normalized_weights
+using ..Utils: effective_sample_size, hist
 using ..Utils: mvt_logpdf, logfactorial
 
 using Distributions
@@ -65,28 +67,94 @@ function random_initial_assignment!(instances, data, sufficient_stats, model::Ch
     end
 end
 
-function fit(data::Matrix{T}, model, sampler::GibbsSampler) where {T <: Real}
+function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) where {T <: Real}
     n = size(data)[2]
-    dim = size(data)[1]
-    instances = Array{Int64}(undef, n, sampler.num_iterations+1)
-    log_likelihoods = Vector{Float64}(undef, sampler.num_iterations+1)
+    instances = Array{Int64}(undef, n, sampler.num_iterations + sampler.num_burn_in)
+    log_likelihoods = Vector{Float64}(undef, sampler.num_iterations + sampler.num_burn_in)
     n = size(data)[2]
     sufficient_stats = prepare_sufficient_statistics(model, data)
     auxillary_variables = prepare_auxillary_variables(model, data)
     # Assign all of the observations to the first cluster
     random_initial_assignment!(instances, data, sufficient_stats, model, auxillary_variables)
     log_likelihoods[1] = compute_joint_log_likelihood(sufficient_stats, model)
-    for iteration = ProgressBar(2:sampler.num_iterations+1)
+    for iteration = ProgressBar(2:(sampler.num_iterations + sampler.num_burn_in))
         instances[:, iteration] = instances[:, iteration-1]
         for observation = 1:n
-            gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
-            @assertion sum(sufficient_stats.cluster.num_observations[1:n]) === n
+            sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler)
         end
-        cluster_assignments = vec(instances[:, iteration])
-        gibbs_sample!(auxillary_variables, sufficient_stats, model, data, cluster_assignments)
+        gibbs_sample!(auxillary_variables, sufficient_stats, model)
         log_likelihoods[iteration] = compute_joint_log_likelihood(sufficient_stats, model)
     end
-    return (instances[:, 2:end], log_likelihoods[2:end])
+    return (instances[:, (sampler.num_burn_in+1):end], log_likelihoods[(sampler.num_burn_in+1):end])
+end
+
+function sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler::GibbsSampler)
+    gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
+end
+
+function propose_cluster(previous_cluster, observation, sufficient_stats, sampler::MetropolisHastingsSampler)
+    start_index = maximum([1, observation - sampler.observation_window])
+    clusters = findall(sufficient_stats.cluster.clusters[start_index:observation-1])
+    if observation - sampler.observation_window > 0
+        clusters .+= (observation - sampler.observation_window - 1)
+    end
+    if !(previous_cluster in clusters)
+        push!(clusters, previous_cluster)
+    end
+    if previous_cluster !== observation 
+        push!(clusters, observation)
+    end
+    sort!(clusters)
+    num_clusters = length(clusters)
+    center_index = findfirst(clusters .=== previous_cluster)
+    start_index = maximum([1, center_index - sampler.cluster_radius])
+    stop_index = minimum([num_clusters, center_index + sampler.cluster_radius])
+    sampled_index = rand(start_index:stop_index)
+    return (clusters[sampled_index], -log(stop_index - start_index))
+end
+
+function compute_cluster_log_predictive(observation, cluster, sufficient_stats, model)
+    log_predictive = 0
+    cluster_psi = compute_stick_breaking_posterior(cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
+    log_predictive += log(cluster_psi[1]) - log(sum(cluster_psi))
+    younger_clusters = (cluster+1):(observation-1)
+    for younger_cluster = younger_clusters 
+        younger_cluster_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
+        log_predictive += log(younger_cluster_psi[2]) - log(sum(younger_cluster_psi))
+    end
+    return log_predictive
+end
+
+function sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler::MetropolisHastingsSampler)
+    previous_cluster = instances[observation, iteration]
+    if (observation > previous_cluster) || (observation === previous_cluster && sufficient_stats.cluster.num_observations[previous_cluster] === 1)
+        remove_observation!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
+
+        previous_cluster_log_weight = data_log_predictive(observation, previous_cluster, sufficient_stats.data, model.data_parameters, 
+                                                          data, auxillary_variables)
+        previous_cluster_log_weight += compute_cluster_log_predictive(observation, previous_cluster, sufficient_stats, model)
+
+        # Propose a new cluster for the current observation
+        (proposed_cluster, proposal_log_weight) = propose_cluster(previous_cluster, observation, sufficient_stats, sampler)
+        # Compute the joint likelihood of the proposal
+        proposed_cluster_log_weight = data_log_predictive(observation, proposed_cluster, sufficient_stats.data, model.data_parameters,
+                                                          data, auxillary_variables)
+        proposed_cluster_log_weight += compute_cluster_log_predictive(observation, proposed_cluster, sufficient_stats, model)
+
+        (_, previous_cluster_proposal_log_weight) = propose_cluster(proposed_cluster, observation, sufficient_stats, sampler) 
+
+        log_acceptance_ratio = proposed_cluster_log_weight - previous_cluster_log_weight
+        log_acceptance_ratio += (previous_cluster_proposal_log_weight - proposal_log_weight)
+
+        log_uniform_variate = log(rand(Uniform(0, 1), 1)[1])
+        if log_uniform_variate < log_acceptance_ratio
+            final_cluster = proposed_cluster
+        else
+            final_cluster = previous_cluster
+        end
+        add_observation!(observation, final_cluster, instances, iteration, data, sufficient_stats, model, 
+                         auxillary_variables)
+    end
 end
 
 function gibbs_sample!(auxillary_variables::AuxillaryVariables, sufficient_stats::SufficientStatistics, 
@@ -157,7 +225,7 @@ function gibbs_sample!(auxillary_variables, sufficient_stats::SufficientStatisti
                 sufficient_stats.data.topic_token_frequencies[token, previous_topic] -= 1
                 auxillary_variables.data.document_topic_frequencies[previous_topic, document] -= 1
                 # sample new topic 
-                (new_topic, log_weight) = sample_topic(sufficient_stats, data_parameters, cluster, token)
+                (new_topic, _) = sample_topic(sufficient_stats, data_parameters, cluster, token)
                 auxillary_variables.data.word_topic_assignments[instance, token, document] = new_topic
                 # update sufficient statistics
                 sufficient_stats.data.cluster_topic_frequencies[new_topic, cluster] += 1
@@ -176,7 +244,7 @@ end
 
 function gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model::Mixture, auxillary_variables)
     remove_observation!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
-    (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model, auxillary_variables)
+    (cluster, _) = gibbs_proposal(observation, data, sufficient_stats, model, auxillary_variables)
     add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model, auxillary_variables)
 end
 
@@ -184,7 +252,7 @@ function gibbs_sample!(observation, instances, iteration, data, sufficient_stats
     n = sufficient_stats.n
     if observation in [1,n] || (instances[observation-1, iteration] !== instances[observation+1, iteration])
         remove_observation!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
-        (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model, auxillary_variables)
+        (cluster, _) = gibbs_proposal(observation, data, sufficient_stats, model, auxillary_variables)
         add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model, auxillary_variables)
     end
 end
@@ -214,7 +282,6 @@ end
 function gibbs_proposal(observation, data, sufficient_stats, model::Changepoint{C, D}, auxillary_variables) where 
                        {C <: DpParameters, D}
     data_parameters = model.data_parameters
-    cluster_parameters = model.cluster_parameters
     n = sufficient_stats.n
 
     changepoints = get_changepoints(sufficient_stats, observation)
@@ -257,8 +324,6 @@ end
 function gibbs_proposal(observation, data, sufficient_stats, model::Changepoint{C, D}, auxillary_variables) where 
                         {C <: NtlParameters, D}
     data_parameters = model.data_parameters
-    cluster_parameters = model.cluster_parameters
-    n = sufficient_stats.n
 
     changepoints = get_changepoints(sufficient_stats, observation)
     num_changepoints = length(changepoints)
@@ -288,7 +353,6 @@ end
 function fit(data, model, sampler::Union{SequentialMonteCarlo, SequentialImportanceSampler})
     num_particles = sampler.num_particles
     n = size(data)[2]
-    dim = size(data)[1]
     particles = Array{Int64}(undef, n, num_particles)
     particles .= n+1
     num_particles = size(particles)[2]
@@ -515,7 +579,6 @@ function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::S
     posterior_mean = vec(sufficient_stats.data.posterior_means[:, cluster])
     dim = length(posterior_mean)
     posterior_covariance = reshape(sufficient_stats.data.posterior_covs[:, cluster], dim, dim)
-    posterior_precision = inv(posterior_covariance)
     prior_mean = data_parameters.prior_mean
     prior_covariance = data_parameters.prior_covariance
     prior_precision = inv(prior_covariance)
@@ -585,7 +648,7 @@ function compute_arrivals_log_likelihood(sufficient_stats::SufficientStatistics,
 end
 
 function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D},
-                                           cluster_parameters::DpParameters) where {T, C <: MixtureSufficientStatistics, D}
+                                           cluster_parameters::DpParameters) where {C <: MixtureSufficientStatistics, D}
     num_observations = sufficient_stats.cluster.num_observations
     num_observations = num_observations[num_observations .> 0]
     num_clusters = length(num_observations)
@@ -1293,7 +1356,6 @@ function compute_data_posterior_parameters!(cluster::Int64, sufficient_stats::Su
                                             data_parameters::GaussianParameters)
     data_mean = vec(sufficient_stats.data.data_means[:, cluster])
     n = sufficient_stats.cluster.num_observations[cluster]
-    dim = length(data_mean)
     prior_mean = data_parameters.prior_mean
     prior_cov = data_parameters.prior_covariance
     prior_precision = inv(prior_cov)
@@ -1350,7 +1412,7 @@ function data_log_predictive(observation::Int64, cluster::Int64,
     cluster_topic_posterior = vec(data_sufficient_stats.cluster_topic_posterior[:, cluster])
     n = sum(document_topic_frequencies)
     posterior = DirichletMultinomial(n, cluster_topic_posterior)
-    return logpdf(cluster_topic_posterior, document_topic_frequencies)
+    return logpdf(posterior, document_topic_frequencies)
 end
 
 function data_log_predictive(observation::Int64, cluster::Int64, 
@@ -1431,7 +1493,7 @@ function gibbs_sample!(observation, instances, iteration, data, sufficient_stats
     remove_observation!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
     previous_state = (observation > 1) ? instances[observation-1, iteration] : n+1
     next_state = (observation < n) ? instances[observation+1, iteration] : n+1
-    (cluster, weight) = gibbs_proposal(observation, data, sufficient_stats, model, previous_state, next_state, auxillary_variables)
+    (cluster, _) = gibbs_proposal(observation, data, sufficient_stats, model, previous_state, next_state, auxillary_variables)
     add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model, auxillary_variables, 
                      update_next_cluster=true)
 end
