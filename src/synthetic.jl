@@ -150,11 +150,12 @@ function sample_cluster_parameters(num_clusters, data_parameters::MultinomialPar
 end
 
 function sample_cluster_parameters(num_clusters, data_parameters::FiniteTopicModelParameters)
+    # Generates the word distribution for each topic
     num_topics = data_parameters.num_topics
     num_words = data_parameters.num_words
     word_parameter = data_parameters.word_parameter
-    topic_word_distributions = Matrix{Int64}(undef, num_words, num_topics)
-    for topic = 1:num_topic
+    topic_word_distributions = Matrix{Float64}(undef, num_words, num_topics)
+    for topic = 1:num_topics
         word_prior = Dirichlet(num_words, word_parameter)
         word_distribution_parameter = rand(word_prior, 1)
         topic_word_distributions[:, topic] = word_distribution_parameter
@@ -163,27 +164,35 @@ function sample_cluster_parameters(num_clusters, data_parameters::FiniteTopicMod
 end
 
 function sample_data(cluster, num_assigned, topic_word_distributions, data_parameters::FiniteTopicModelParameters)
+    # For a particular cluster, samples topics from the topic prior for each word, and then samples word token from
+    # topic distribution
     num_topics = data_parameters.num_topics
     topic_parameter = data_parameters.topic_parameter
     topic_prior = Dirichlet(num_topics, topic_parameter)
-    topic_distribution_paramter = rand(topic_prior, 1)
+    topic_distribution_parameter = vec(rand(topic_prior, 1))
     num_words = data_parameters.num_words
     topic_distribution = Multinomial(num_words, topic_distribution_parameter)
-    topics = rand(topic_distribution, num_assigned)
+    topic_frequencies = rand(topic_distribution, num_assigned)
 
-    words = Vector{Int64}(undef, num_words)
-    for i = 1:num_words
-        topic = topics[i]
-        word_distribution_parameter = vec(topic_word_distributions[:, topic])
-        word_distribution = Multinomial(1, word_distribution_parameter)
-        word = rand(word_distribution, 1)[1]
-        words[i] = word
+    words = Matrix{Int64}(undef, num_words, num_assigned)
+    for observation = 1:num_assigned
+        word_index = 1
+        for topic = 1:num_topics 
+            num_words_assigned_to_topic = topic_frequencies[topic, observation]
+            word_distribution_parameter = vec(topic_word_distributions[:, topic])
+            word_distribution = Multinomial(1, word_distribution_parameter)
+            for _ = 1:num_words_assigned_to_topic
+                word = findfirst(vec(rand(word_distribution, 1)) .=== 1)
+                words[word_index, observation] = word
+                word_index += 1
+            end
+        end
     end
-
     return words
 end
 
-function sample_data(cluster, num_assigned, location_scale_parameters::Vector{LocationScale}, ::GaussianWishartParameters)
+function sample_data(cluster, num_assigned, location_scale_parameters::Vector{LocationScale}, 
+                     ::GaussianWishartParameters)
     location_scale = location_scale_parameters[cluster]
     location = location_scale.location
     scale = location_scale.scale
@@ -229,16 +238,24 @@ function generate_arrival_times(n::Int64, arrival_distribution::PoissonArrivals)
     return arrivals
 end
 
-function prepare_data_matrix(::Type{T}, dim, n) where {T <: MultinomialParameters}
+function prepare_data_matrix(data_parameters::MultinomialParameters, n)
+    dim = data_parameters.dim 
     return Array{Int64}(undef, dim, n)
 end
 
-function prepare_data_matrix(::Type{T}, dim, n) where {T <: GaussianParameters}
+function prepare_data_matrix(data_parameters::GaussianParameters, n)
+    dim = data_parameters.dim 
     return Array{Float64}(undef, dim, n)
 end
 
-function prepare_data_matrix(::Type{T}, dim, n) where {T <: GaussianWishartParameters}
+function prepare_data_matrix(data_parameters::GaussianWishartParameters, n)
+    dim = data_parameters.dim
     return Array{Float64}(undef, dim, n)
+end
+
+function prepare_data_matrix(data_parameters::FiniteTopicModelParameters, n)
+    dim = data_parameters.num_words
+    return Array{Int64}(undef, dim, n)
 end
 
 get_cluster_parameters(model::Union{Mixture, HiddenMarkovModel}) = model.cluster_parameters
@@ -246,13 +263,12 @@ get_cluster_parameters(model::Changepoint) = model.cluster_parameters
 
 function generate(model::Model; n::Int64=100)
     data_parameters = model.data_parameters
-    dim = data_parameters.dim
 
     cluster_prior_parameters = get_cluster_parameters(model)
     arrivals = generate_arrival_times(n, cluster_prior_parameters.arrival_distribution)
     num_clusters = sum(arrivals)
     assignments = sample_clusters(arrivals, model)
-    data = prepare_data_matrix(typeof(data_parameters), dim, n)
+    data = prepare_data_matrix(data_parameters, n)
 
     cluster_parameters = sample_cluster_parameters(num_clusters, data_parameters)
 

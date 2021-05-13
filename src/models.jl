@@ -83,11 +83,9 @@ struct FiniteTopicModelParameters <: DataParameters
     num_words::Int64
     topic_parameter::Float64
     word_parameter::Float64
-    function FiniteTopicModelParameters(num_topics, num_words, topic_parameter, word_parameter)
+    function FiniteTopicModelParameters(;num_topics::Int64=10, num_words::Int64=100, 
+                                        topic_parameter::Float64=0.1, word_parameter::Float64=0.1)
         return new(num_topics, num_words, topic_parameter, word_parameter)
-    end
-    function FiniteTopicModelParameters(num_topics, topic_parameter, word_parameter)
-        return new(num_topics, -1, topic_parameter, word_parameter)
     end
 end
 
@@ -270,7 +268,7 @@ struct MultinomialAuxillaryVariables <: DataAuxillaryVariables end
 struct GaussianWishartAuxillaryVariables <: DataAuxillaryVariables end 
 
 struct FiniteTopicModelAuxillaryVariables <: DataAuxillaryVariables 
-    token_topic_assignments::Matrix{Dict}
+    token_topic_assignments::Vector{Dict{Int64, Dict{Int64, Int64}}}
     document_topic_frequencies::Matrix 
 end
 

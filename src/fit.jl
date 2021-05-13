@@ -35,7 +35,35 @@ macro assertion(test)
     end))
 end
 
-function random_initial_assignment!(instances, data, sufficient_stats, model::Union{Mixture, HiddenMarkovModel}, auxillary_variables)
+function random_initial_assignment!(auxillary_variables::AuxillaryVariables{A, D}, sufficient_stats::SufficientStatistics,
+                                    cluster_assignments::Vector{Int64}, ::Model, data) where
+                                    {A, D <: Union{GaussianAuxillaryVariables, GaussianWishartAuxillaryVariables, MultinomialAuxillaryVariables}}
+    nothing
+end
+
+function random_initial_assignment!(auxillary_variables::AuxillaryVariables{A, D}, sufficient_stats::SufficientStatistics,
+                                    cluster_assignments::Vector{Int64}, model::Model, data) where {A, D <: FiniteTopicModelAuxillaryVariables}
+    num_documents = length(cluster_assignments)
+    num_tokens = size(data)[1]
+    num_topics = model.data_parameters.num_topics
+    for document = 1:num_documents
+        cluster = cluster_assignments[document]
+        for token = 1:num_tokens
+            num_instances = data[token, document]
+            for instance = 1:num_instances
+                new_topic = rand(1:num_topics)
+                auxillary_variables.data.token_topic_assignments[document][token][instance] = new_topic
+                # update sufficient statistics
+                update_token_topic_statistics!(document, token, new_topic, cluster, auxillary_variables, sufficient_stats,
+                                               update_type="add")
+            end
+        end
+    end
+end
+
+function random_initial_assignment!(instances::Matrix, data::Matrix, sufficient_stats::SufficientStatistics{C, D}, 
+                                    model::Union{Mixture, HiddenMarkovModel}, auxillary_variables::AuxillaryVariables{A, F}) where
+                                    {C, D, A, F}
     n = sufficient_stats.n
     iteration = 1
     cluster = 1
@@ -50,6 +78,7 @@ function random_initial_assignment!(instances, data, sufficient_stats, model::Un
         end
         add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model, auxillary_variables)
     end
+    random_initial_assignment!(auxillary_variables, sufficient_stats, vec(instances[:, iteration]), model, data)
 end
 
 function random_initial_assignment!(instances, data, sufficient_stats, model::Changepoint, auxillary_variables)
@@ -212,41 +241,52 @@ function sample_topic(sufficient_stats, data_parameters, cluster, token)
     num_topics = data_parameters.num_topics
     cluster_topic_frequencies = sufficient_stats.data.cluster_topic_frequencies
     topic_token_frequencies = sufficient_stats.data.topic_token_frequencies
-    topics = 1:num_topics 
+    topics = Vector(1:num_topics) 
     topic_log_weights = Array{Float64}(undef, num_topics)
     num_tokens = size(topic_token_frequencies)[1]
     for topic = topics
         cluster_log_weight = log(cluster_topic_frequencies[topic, cluster] + topic_parameter)
         cluster_log_weight -= log(sum(cluster_topic_frequencies[:, cluster]) + num_topics*topic_parameter)
         token_log_weight = log(topic_token_frequencies[token, topic] + word_parameter) 
-        token_log_weight -= log(topic_token_frequencies[:, topic] + num_tokens*word_parameter)
+        token_log_weight -= log(sum(topic_token_frequencies[:, topic]) + num_tokens*word_parameter)
         topic_log_weights[topic] = cluster_log_weight + token_log_weight
     end
     return gumbel_max(topics, topic_log_weights)
 end
 
+function update_token_topic_statistics!(document, token, topic, cluster, auxillary_variables, sufficient_stats;
+                                        update_type="add")
+    if update_type === "add"
+        sufficient_stats.data.cluster_topic_frequencies[topic, cluster] += 1
+        sufficient_stats.data.topic_token_frequencies[token, topic] += 1
+        auxillary_variables.data.document_topic_frequencies[topic, document] += 1
+    elseif update_type === "remove"
+        sufficient_stats.data.cluster_topic_frequencies[topic, cluster] -= 1
+        sufficient_stats.data.topic_token_frequencies[token, topic] -= 1
+        auxillary_variables.data.document_topic_frequencies[topic, document] -= 1
+    end
+end
+
 function gibbs_sample!(auxillary_variables, sufficient_stats::SufficientStatistics,
                        data_parameters::FiniteTopicModelParameters, data::Matrix{T},
                        cluster_assignments::Vector{Int64}) where {T <: Real}
-    num_documents = size(auxillary_variables.data.word_topic_assignments)[3] 
-    num_tokens = size(auxillary_variables.data.word_topic_assignments)[2] 
+    num_documents = length(cluster_assignments)
+    num_tokens = size(data)[1]
     for document = 1:num_documents
         cluster = cluster_assignments[document]
         for token = 1:num_tokens
             num_instances = data[token, document]
             for instance = 1:num_instances
-                previous_topic = auxillary_variables.data.word_topic_assignments[instance, token, document]
+                previous_topic = auxillary_variables.data.token_topic_assignments[document][token][instance]
                 # update sufficient statistics
-                sufficient_stats.data.cluster_topic_frequencies[previous_topic, cluster] -= 1
-                sufficient_stats.data.topic_token_frequencies[token, previous_topic] -= 1
-                auxillary_variables.data.document_topic_frequencies[previous_topic, document] -= 1
+                update_token_topic_statistics!(document, token, previous_topic, cluster, auxillary_variables, sufficient_stats,
+                                               update_type="remove")
                 # sample new topic 
                 (new_topic, _) = sample_topic(sufficient_stats, data_parameters, cluster, token)
-                auxillary_variables.data.word_topic_assignments[instance, token, document] = new_topic
+                auxillary_variables.data.token_topic_assignments[document][token][instance] = new_topic
                 # update sufficient statistics
-                sufficient_stats.data.cluster_topic_frequencies[new_topic, cluster] += 1
-                sufficient_stats.data.topic_token_frequencies[token, new_topic] += 1
-                auxillary_variables.data.document_topic_frequencies[new_topic, document] += 1
+                update_token_topic_statistics!(document, token, previous_topic, cluster, auxillary_variables, sufficient_stats,
+                                               update_type="add")
             end
         end
     end
@@ -472,7 +512,7 @@ function prepare_data_auxillary_variables(data_parameters::FiniteTopicModelParam
         for word = 1:num_words 
             token_assignments = [(token, 0) for token in 1:data[word, document]]
             token_assignments = Dict{Int64, Int64}(token_assignments)
-            append!(word_dicts, (word, token_assignments))
+            push!(word_dicts, (word, token_assignments))
         end
         document_dict = Dict{Int64, Dict{Int64, Int64}}(word_dicts)
         word_topic_assignments[document] = document_dict 
@@ -612,6 +652,10 @@ function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::S
     n = sufficient_stats.cluster.num_observations[cluster]
     log_likelihood += log(2*pi)*dim*(n + 1)/2 - (n/2)data_log_determinant - (1/2)prior_log_determinant + (1/2)posterior_log_determinant
     return log_likelihood
+end
+
+function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::SufficientStatistics, data_parameters::FiniteTopicModelParameters) 
+    return NaN
 end
 
 function compute_data_log_likelihood(sufficient_stats::SufficientStatistics, data_parameters::DataParameters) 
@@ -806,7 +850,7 @@ function update_data_sufficient_statistics!(sufficient_stats::SufficientStatisti
 end
 
 function update_data_sufficient_statistics!(sufficient_stats::SufficientStatistics{C, D}, cluster::Int64,
-                                            observation::Vector{Int64}, model::Model, data, auxillary_variables;
+                                            observation::Int64, model::Model, data, auxillary_variables;
                                             update_type::String="add") where {C, D <: FiniteTopicModelSufficientStatistics}
     doc_topic_frequencies = vec(auxillary_variables.data.document_topic_frequencies[:, observation])
     if update_type === "add"
@@ -1417,12 +1461,12 @@ function compute_data_posterior_parameters!(cluster::Int64, sufficient_stats, da
 end
 
 function compute_data_posterior_parameters!(cluster::Int64, sufficient_stats, data_parameters::FiniteTopicModelParameters)
-    sufficient_stats.data.cluster_topic_posterior = sufficient_stats.data.cluster_topic_frequencies .+ data_parameters.topic_parameter
-    sufficient_stats.data.topic_token_posterior = sufficient_stats.data.topic_token_frequencies .+ data_parameters.word_parameter
+    sufficient_stats.data.cluster_topic_posterior[:, :] = sufficient_stats.data.cluster_topic_frequencies .+ data_parameters.topic_parameter
+    sufficient_stats.data.topic_token_posterior[:, :] = sufficient_stats.data.topic_token_frequencies .+ data_parameters.word_parameter
 end
 
 function data_log_predictive(observation::Int64, cluster::Int64, 
-                             data_sufficient_stats::GaussianSufficientStatistics, 
+                             data_sufficient_stats::FiniteTopicModelSufficientStatistics, 
                              data_parameters::FiniteTopicModelParameters, data, auxillary_variables)
     document_topic_frequencies = vec(auxillary_variables.data.document_topic_frequencies[:, observation])
     cluster_topic_posterior = vec(data_sufficient_stats.cluster_topic_posterior[:, cluster])
