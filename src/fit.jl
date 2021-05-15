@@ -62,8 +62,8 @@ function random_initial_assignment!(auxillary_variables::AuxillaryVariables{A, D
 end
 
 function random_initial_assignment!(instances::Matrix, data::Matrix, sufficient_stats::SufficientStatistics{C, D}, 
-                                    model::Union{Mixture, HiddenMarkovModel}, auxillary_variables::AuxillaryVariables{A, F}) where
-                                    {C, D, A, F}
+                                    model::Union{Mixture, HiddenMarkovModel}, auxillary_variables::AuxillaryVariables{A, F},
+                                    sampler::GibbsSampler) where {C, D, A, F}
     n = sufficient_stats.n
     iteration = 1
     cluster = 1
@@ -81,7 +81,28 @@ function random_initial_assignment!(instances::Matrix, data::Matrix, sufficient_
     random_initial_assignment!(auxillary_variables, sufficient_stats, vec(instances[:, iteration]), model, data)
 end
 
-function random_initial_assignment!(instances, data, sufficient_stats, model::Changepoint, auxillary_variables)
+function random_initial_assignment!(instances::Matrix, data::Matrix, sufficient_stats::SufficientStatistics{C, D}, 
+                                    model::Union{Mixture, HiddenMarkovModel}, auxillary_variables::AuxillaryVariables{A, F},
+                                    sampler::MetropolisHastingsSampler) where {C, D, A, F}
+    n = sufficient_stats.n
+    iteration = 1
+    cluster = 1
+    clusters = []
+    for observation = 1:n
+        coin_flip = reshape(rand(Binomial(1, 0.1), 1), 1)[1]
+        if coin_flip === 1 || length(clusters) === 0
+            cluster = observation
+            append!(clusters, cluster)
+        else
+            clusters_to_sample = clusters[clusters .> observation - sampler.observation_window]
+            cluster = rand(clusters_to_sample)
+        end
+        add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model, auxillary_variables)
+    end
+    random_initial_assignment!(auxillary_variables, sufficient_stats, vec(instances[:, iteration]), model, data)
+end
+
+function random_initial_assignment!(instances, data, sufficient_stats, model::Changepoint, auxillary_variables, sampler)
     n = sufficient_stats.n
     observation = 1
     changepoint = 1
@@ -104,7 +125,7 @@ function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) wher
     sufficient_stats = prepare_sufficient_statistics(model, data)
     auxillary_variables = prepare_auxillary_variables(model, data)
     # Assign all of the observations to the first cluster
-    random_initial_assignment!(instances, data, sufficient_stats, model, auxillary_variables)
+    random_initial_assignment!(instances, data, sufficient_stats, model, auxillary_variables, sampler)
     log_likelihoods[1] = compute_joint_log_likelihood(sufficient_stats, model)
     for iteration = ProgressBar(2:(sampler.num_iterations + sampler.num_burn_in))
         instances[:, iteration] = instances[:, iteration-1]
@@ -285,7 +306,7 @@ function gibbs_sample!(auxillary_variables, sufficient_stats::SufficientStatisti
                 (new_topic, _) = sample_topic(sufficient_stats, data_parameters, cluster, token)
                 auxillary_variables.data.token_topic_assignments[document][token][instance] = new_topic
                 # update sufficient statistics
-                update_token_topic_statistics!(document, token, previous_topic, cluster, auxillary_variables, sufficient_stats,
+                update_token_topic_statistics!(document, token, new_topic, cluster, auxillary_variables, sufficient_stats,
                                                update_type="add")
             end
         end

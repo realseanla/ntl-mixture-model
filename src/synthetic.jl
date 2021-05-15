@@ -171,21 +171,17 @@ function sample_data(cluster, num_assigned, topic_word_distributions, data_param
     topic_prior = Dirichlet(num_topics, topic_parameter)
     topic_distribution_parameter = vec(rand(topic_prior, 1))
     num_words = data_parameters.num_words
-    topic_distribution = Multinomial(num_words, topic_distribution_parameter)
+    topic_distribution = Multinomial(data_parameters.length, topic_distribution_parameter)
     topic_frequencies = rand(topic_distribution, num_assigned)
 
-    words = Matrix{Int64}(undef, num_words, num_assigned)
+    words = zeros(Int64, num_words, num_assigned)
     for observation = 1:num_assigned
-        word_index = 1
         for topic = 1:num_topics 
             num_words_assigned_to_topic = topic_frequencies[topic, observation]
             word_distribution_parameter = vec(topic_word_distributions[:, topic])
-            word_distribution = Multinomial(1, word_distribution_parameter)
-            for _ = 1:num_words_assigned_to_topic
-                word = findfirst(vec(rand(word_distribution, 1)) .=== 1)
-                words[word_index, observation] = word
-                word_index += 1
-            end
+            word_distribution = Multinomial(num_words_assigned_to_topic, word_distribution_parameter)
+            words_from_topic = vec(rand(word_distribution, 1))
+            words[:, observation] += words_from_topic
         end
     end
     return words
