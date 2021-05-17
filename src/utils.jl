@@ -3,7 +3,6 @@ module Utils
 using Distributions
 using SpecialFunctions
 import SpecialFunctions: logbeta, logfactorial 
-using ProgressBars
 using LinearAlgebra
 using Clustering
 using RCall
@@ -29,7 +28,7 @@ function compute_co_occurrence_matrix(markov_chain::Matrix{Int64}, weights::Vect
     n = size(markov_chain)[1]
     co_occurrence_matrix = zeros(Int64, n, n)
     num_instances = size(markov_chain)[2]
-    for i = ProgressBar(1:num_instances)
+    for i = 1:num_instances
         assignment = markov_chain[:, i]
         ohe_assignment = one_hot_encode(assignment)
         instance_co_occurrence_matrix = transpose(ohe_assignment) * ohe_assignment

@@ -275,12 +275,11 @@ function generate(model::Model; n::Int64=100)
         data[:, assigned_to_cluster] = cluster_data
     end
 
-    assignments = DataFrame(reshape(assignments, length(assignments), 1))
+    assignments = DataFrame(reshape(assignments, length(assignments), 1), :auto)
     assignments = select(assignments, "x1" => "cluster")
-    data = DataFrame(transpose(data))
+    data = DataFrame(transpose(data), :auto)
 
     data = hcat(assignments, data)
-    data = convert(Matrix, data)
     return data
 end
 

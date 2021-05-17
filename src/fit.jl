@@ -23,6 +23,7 @@ using Distributions
 using LinearAlgebra
 using Statistics
 using ProgressBars
+using ProgressMeter
 using SparseArrays
 using SpecialFunctions
 using DataStructures
@@ -127,7 +128,8 @@ function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) wher
     # Assign all of the observations to the first cluster
     random_initial_assignment!(instances, data, sufficient_stats, model, auxillary_variables, sampler)
     log_likelihoods[1] = compute_joint_log_likelihood(sufficient_stats, model)
-    for iteration = ProgressBar(2:(sampler.num_iterations + sampler.num_burn_in))
+    #for iteration = ProgressBar(2:(sampler.num_iterations + sampler.num_burn_in), printing_delay=0.001)
+    @showprogress for iteration = 2:(sampler.num_iterations + sampler.num_burn_in)
         instances[:, iteration] = instances[:, iteration-1]
         for observation = 1:n
             sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler)
