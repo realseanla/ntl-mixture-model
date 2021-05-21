@@ -16,9 +16,6 @@ struct GibbsSampler <: MetropolisWithinGibbsSampler
         end
         return new(num_iterations, num_burn_in)
     end
-    function GibbsSampler(;num_iterations::Int64=1000)
-        return new(num_iterations, 0)
-    end
 end
 
 struct MetropolisHastingsSampler <: MetropolisWithinGibbsSampler 

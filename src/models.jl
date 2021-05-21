@@ -235,7 +235,7 @@ end
 
 abstract type Model end
 
-struct Mixture{C<:Union{ClusterParameters, ParametricArrivalsClusterParameters}, D<:DataParameters} <: Model
+struct Mixture{C<:Union{ClusterParameters, ParametricArrivalsClusterParameters, DpParameters}, D<:DataParameters} <: Model
     cluster_parameters::C
     data_parameters::D
 end

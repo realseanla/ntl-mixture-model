@@ -165,7 +165,19 @@ function propose_cluster(previous_cluster, observation, sufficient_stats, sample
     return (clusters[sampled_index], -log(stop_index - start_index))
 end
 
-function compute_cluster_log_predictive(observation, cluster, sufficient_stats, model)
+function compute_cluster_log_predictive(observation, cluster, sufficient_stats, model::Mixture{C, D}) where {C <: NtlParameters, D}
+    log_predictive = 0
+    cluster_psi = compute_stick_breaking_posterior(cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
+    log_predictive += log(cluster_psi[1]) - log(sum(cluster_psi))
+    younger_clusters = (cluster+1):(observation-1)
+    for younger_cluster = younger_clusters 
+        younger_cluster_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
+        log_predictive += log(younger_cluster_psi[2]) - log(sum(younger_cluster_psi))
+    end
+    return log_predictive
+end
+
+function compute_cluster_log_predictive(observation, cluster, sufficient_stats, model::Mixture{C, D}) where {C <: DpParameters, D}
     log_predictive = 0
     cluster_psi = compute_stick_breaking_posterior(cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
     log_predictive += log(cluster_psi[1]) - log(sum(cluster_psi))
@@ -648,7 +660,7 @@ function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::S
                                              data_parameters::MultinomialParameters)
     dirichlet_posterior = sufficient_stats.data.posterior_dirichlet_scale[:, cluster]
     dirichlet_prior = data_parameters.prior_dirichlet_scale
-    counts = convert(Vector{Int64}, dirichlet_posterior - dirichlet_prior)
+    counts = convert(Vector{Int64}, round.(dirichlet_posterior - dirichlet_prior))
     log_likelihood = log_multinomial_coeff(counts) + logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
     return log_likelihood
 end
