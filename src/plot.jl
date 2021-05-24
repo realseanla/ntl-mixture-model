@@ -69,7 +69,6 @@ end
 function plot_log_likelihoods(log_likelihoods; burn_in=0) 
     plot(1:size(log_likelihoods)[1], log_likelihoods, seriestype=:line,
          xlabel="Iteration", ylabel="Log likelihood", legend=false)
-    vline!([burn_in])
 end
 
 function plot_num_clusters(markov_chain) 

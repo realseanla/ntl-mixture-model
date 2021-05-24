@@ -10,11 +10,12 @@ abstract type MetropolisWithinGibbsSampler <: Sampler  end
 struct GibbsSampler <: MetropolisWithinGibbsSampler
     num_iterations::Int64
     num_burn_in::Int64
-    function GibbsSampler(;num_iterations::Int64=1000, num_burn_in::Int64=0)
+    skin::Int64
+    function GibbsSampler(;num_iterations::Int64=1000, num_burn_in::Int64=0, skip::Int64=1)
         if num_iterations < 1
             error("Number of iterations should be positive.")
         end
-        return new(num_iterations, num_burn_in)
+        return new(num_iterations, num_burn_in, skip)
     end
 end
 
@@ -23,8 +24,9 @@ struct MetropolisHastingsSampler <: MetropolisWithinGibbsSampler
     num_burn_in::Int64
     cluster_radius::Int64 
     observation_window::Int64
-    function MetropolisHastingsSampler(;num_iterations=1000, num_burn_in=1000, cluster_radius=5, observation_window=100)
-        return new(num_iterations, num_burn_in, cluster_radius, observation_window)
+    skip::Int64
+    function MetropolisHastingsSampler(;num_iterations=1000, num_burn_in=1000, cluster_radius=5, observation_window=100, skip=1)
+        return new(num_iterations, num_burn_in, cluster_radius, observation_window, skip)
     end
 end
 

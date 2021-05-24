@@ -131,17 +131,20 @@ function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) wher
     #for iteration = ProgressBar(2:(sampler.num_iterations + sampler.num_burn_in), printing_delay=0.001)
     @showprogress for iteration = 2:(sampler.num_iterations + sampler.num_burn_in)
         instances[:, iteration] = instances[:, iteration-1]
-        for observation = 1:n
-            sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler)
-        end
+        sample!(instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler) 
         gibbs_sample!(auxillary_variables, sufficient_stats, model, data, instances[:, iteration])
         log_likelihoods[iteration] = compute_joint_log_likelihood(sufficient_stats, model, auxillary_variables)
     end
-    return (instances[:, (sampler.num_burn_in+1):end], log_likelihoods[(sampler.num_burn_in+1):end])
+    output_iterations = Vector((sampler.num_burn_in+1):(sampler.num_iterations + sampler.num_burn_in))
+    output_iterations = output_iterations[output_iterations .% sampler.skip .=== 0]
+    return (instances[:, output_iterations], log_likelihoods[output_iterations])
 end
 
-function sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler::GibbsSampler)
-    gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
+function sample!(instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler::GibbsSampler)
+    n = sufficient_stats.n
+    for observation = 1:n
+        gibbs_sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
+    end
 end
 
 function propose_cluster(previous_cluster, observation, sufficient_stats, sampler::MetropolisHastingsSampler)
@@ -189,51 +192,54 @@ function compute_cluster_log_predictive(observation, cluster, sufficient_stats, 
     return log_predictive
 end
 
-function sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler::MetropolisHastingsSampler)
-    previous_cluster = instances[observation, iteration]
-    if (observation > previous_cluster) || (observation === previous_cluster && sufficient_stats.cluster.num_observations[previous_cluster] === 1)
-        remove_observation!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
+function sample!(instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler::MetropolisHastingsSampler)
+    n = sufficient_stats.n 
+    for observation = 1:n
+        previous_cluster = instances[observation, iteration]
+        if (observation > previous_cluster) || (observation === previous_cluster && sufficient_stats.cluster.num_observations[previous_cluster] === 1)
+            remove_observation!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
 
-        previous_cluster_log_weight = data_log_predictive(observation, previous_cluster, sufficient_stats.data, model.data_parameters, 
-                                                          data, auxillary_variables)
-        previous_cluster_log_weight += compute_cluster_log_predictive(observation, previous_cluster, sufficient_stats, model)
-        if previous_cluster === observation 
-            previous_cluster_log_weight += new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
-                                                                      auxillary_variables, previous_cluster)
-        else 
-            previous_cluster_log_weight += existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
-                                                                           auxillary_variables, observation, 
-                                                                           previous_cluster) 
+            previous_cluster_log_weight = data_log_predictive(observation, previous_cluster, sufficient_stats.data, model.data_parameters, 
+                                                              data, auxillary_variables)
+            previous_cluster_log_weight += compute_cluster_log_predictive(observation, previous_cluster, sufficient_stats, model)
+            if previous_cluster === observation 
+                previous_cluster_log_weight += new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
+                                                                          auxillary_variables, previous_cluster)
+            else 
+                previous_cluster_log_weight += existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
+                                                                               auxillary_variables, observation, 
+                                                                               previous_cluster) 
+            end
+
+            # Propose a new cluster for the current observation
+            (proposed_cluster, proposal_log_weight) = propose_cluster(previous_cluster, observation, sufficient_stats, sampler)
+            # Compute the joint likelihood of the proposal
+            proposed_cluster_log_weight = data_log_predictive(observation, proposed_cluster, sufficient_stats.data, model.data_parameters,
+                                                              data, auxillary_variables)
+            proposed_cluster_log_weight += compute_cluster_log_predictive(observation, proposed_cluster, sufficient_stats, model)
+            if proposed_cluster === observation 
+                proposed_cluster_log_weight += new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
+                                                                          auxillary_variables, proposed_cluster)
+            else 
+                proposed_cluster_log_weight += existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
+                                                                               auxillary_variables, observation, 
+                                                                               proposed_cluster) 
+            end
+
+            (_, previous_cluster_proposal_log_weight) = propose_cluster(proposed_cluster, observation, sufficient_stats, sampler) 
+
+            log_acceptance_ratio = proposed_cluster_log_weight - previous_cluster_log_weight
+            log_acceptance_ratio += (previous_cluster_proposal_log_weight - proposal_log_weight)
+
+            log_uniform_variate = log(rand(Uniform(0, 1), 1)[1])
+            if log_uniform_variate < log_acceptance_ratio
+                final_cluster = proposed_cluster
+            else
+                final_cluster = previous_cluster
+            end
+            add_observation!(observation, final_cluster, instances, iteration, data, sufficient_stats, model, 
+                             auxillary_variables)
         end
-
-        # Propose a new cluster for the current observation
-        (proposed_cluster, proposal_log_weight) = propose_cluster(previous_cluster, observation, sufficient_stats, sampler)
-        # Compute the joint likelihood of the proposal
-        proposed_cluster_log_weight = data_log_predictive(observation, proposed_cluster, sufficient_stats.data, model.data_parameters,
-                                                          data, auxillary_variables)
-        proposed_cluster_log_weight += compute_cluster_log_predictive(observation, proposed_cluster, sufficient_stats, model)
-        if proposed_cluster === observation 
-            proposed_cluster_log_weight += new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
-                                                                      auxillary_variables, proposed_cluster)
-        else 
-            proposed_cluster_log_weight += existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
-                                                                           auxillary_variables, observation, 
-                                                                           proposed_cluster) 
-        end
-
-        (_, previous_cluster_proposal_log_weight) = propose_cluster(proposed_cluster, observation, sufficient_stats, sampler) 
-
-        log_acceptance_ratio = proposed_cluster_log_weight - previous_cluster_log_weight
-        log_acceptance_ratio += (previous_cluster_proposal_log_weight - proposal_log_weight)
-
-        log_uniform_variate = log(rand(Uniform(0, 1), 1)[1])
-        if log_uniform_variate < log_acceptance_ratio
-            final_cluster = proposed_cluster
-        else
-            final_cluster = previous_cluster
-        end
-        add_observation!(observation, final_cluster, instances, iteration, data, sufficient_stats, model, 
-                         auxillary_variables)
     end
 end
 
