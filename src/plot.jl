@@ -66,4 +66,16 @@ function plot_arrival_posterior_probabilities(markov_chain, true_clustering)
     vline!(true_arrivals)
 end
 
+function plot_log_likelihoods(log_likelihoods; burn_in=0) 
+    plot(1:size(log_likelihoods)[1], log_likelihoods, seriestype=:line,
+         xlabel="Iteration", ylabel="Log likelihood", legend=false)
+    vline!([burn_in])
+end
+
+function plot_num_clusters(markov_chain) 
+    num_unique_clusters_vector = mapslices(u->length(unique(u)), markov_chain, dims=1)
+    plot(1:length(num_unique_clusters_vector), vec(num_unique_clusters_vector), seriestype=:line,
+         xlabel="Iteration", ylabel="Number of clusters", legend=false)
+end
+
 end

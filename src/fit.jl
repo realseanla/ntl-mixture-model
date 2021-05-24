@@ -127,7 +127,7 @@ function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) wher
     auxillary_variables = prepare_auxillary_variables(model, data)
     # Assign all of the observations to the first cluster
     random_initial_assignment!(instances, data, sufficient_stats, model, auxillary_variables, sampler)
-    log_likelihoods[1] = compute_joint_log_likelihood(sufficient_stats, model)
+    log_likelihoods[1] = compute_joint_log_likelihood(sufficient_stats, model, auxillary_variables)
     #for iteration = ProgressBar(2:(sampler.num_iterations + sampler.num_burn_in), printing_delay=0.001)
     @showprogress for iteration = 2:(sampler.num_iterations + sampler.num_burn_in)
         instances[:, iteration] = instances[:, iteration-1]
@@ -135,7 +135,7 @@ function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) wher
             sample!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler)
         end
         gibbs_sample!(auxillary_variables, sufficient_stats, model, data, instances[:, iteration])
-        log_likelihoods[iteration] = compute_joint_log_likelihood(sufficient_stats, model)
+        log_likelihoods[iteration] = compute_joint_log_likelihood(sufficient_stats, model, auxillary_variables)
     end
     return (instances[:, (sampler.num_burn_in+1):end], log_likelihoods[(sampler.num_burn_in+1):end])
 end
@@ -656,8 +656,18 @@ function prepare_cluster_sufficient_statistics(::Mixture, n::Int64)
     return cluster_sufficient_stats
 end
 
+function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::SufficientStatistics, data_parameters::FiniteTopicModelParameters,
+                                             auxillary_variables) 
+    dirichlet_posterior = vec(sufficient_stats.data.cluster_topic_posterior[:, cluster])
+    num_topics = length(dirichlet_posterior)
+    dirichlet_prior = data_parameters.topic_parameter*ones(Float64, num_topics)
+    counts = convert(Vector{Int64}, round.(dirichlet_posterior - dirichlet_prior))
+    log_likelihood = log_multinomial_coeff(counts) + logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
+    return log_likelihood
+end
+
 function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::SufficientStatistics,
-                                             data_parameters::MultinomialParameters)
+                                             data_parameters::MultinomialParameters, auxillary_variables)
     dirichlet_posterior = sufficient_stats.data.posterior_dirichlet_scale[:, cluster]
     dirichlet_prior = data_parameters.prior_dirichlet_scale
     counts = convert(Vector{Int64}, round.(dirichlet_posterior - dirichlet_prior))
@@ -666,7 +676,7 @@ function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::S
 end
 
 function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::SufficientStatistics, 
-                                             data_parameters::GaussianParameters) 
+                                             data_parameters::GaussianParameters, auxillary_variables) 
     posterior_mean = vec(sufficient_stats.data.posterior_means[:, cluster])
     dim = length(posterior_mean)
     posterior_covariance = reshape(sufficient_stats.data.posterior_covs[:, cluster], dim, dim)
@@ -689,16 +699,37 @@ function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::S
     return log_likelihood
 end
 
-function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::SufficientStatistics, data_parameters::FiniteTopicModelParameters) 
-    return NaN
+function compute_auxillary_data_log_likelihood(sufficient_stats, data_parameters::Union{GaussianParameters, MultinomialParameters}, 
+                                               auxillary_variables)
+    return 0.
 end
 
-function compute_data_log_likelihood(sufficient_stats::SufficientStatistics, data_parameters::DataParameters) 
+function compute_auxillary_data_log_likelihood(sufficient_stats, data_parameters::FiniteTopicModelParameters, auxillary_variables)
+    log_likelihood = 0.
+    num_words = data_parameters.num_words
+    dirichlet_prior = data_parameters.word_parameter*ones(Int64, num_words)
+    num_topics = data_parameters.num_topics
+    for topic = 1:num_topics
+        dirichlet_posterior = vec(sufficient_stats.data.topic_token_posterior[:, topic])
+        counts = vec(sufficient_stats.data.topic_token_frequencies[:, topic])
+        topic_log_likelihood = log_multinomial_coeff(counts) + logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
+        @assert(!isnan(topic_log_likelihood))
+        log_likelihood += topic_log_likelihood
+    end
+    return log_likelihood
+end
+
+function compute_data_log_likelihood(sufficient_stats::SufficientStatistics, data_parameters::DataParameters, auxillary_variables) 
     clusters = get_clusters(sufficient_stats.cluster)
     log_likelihood = 0
     for cluster = clusters
-        log_likelihood += compute_cluster_data_log_likelihood(cluster, sufficient_stats, data_parameters)
+        cluster_data_log_likelihood = compute_cluster_data_log_likelihood(cluster, sufficient_stats, data_parameters, auxillary_variables)
+        @assert(!isnan(cluster_data_log_likelihood))
+        log_likelihood += cluster_data_log_likelihood
     end
+    aux_log_likelihood = compute_auxillary_data_log_likelihood(sufficient_stats, data_parameters, auxillary_variables)
+    @assert(!isnan(aux_log_likelihood))
+    log_likelihood += aux_log_likelihood
     return log_likelihood
 end
 
@@ -709,13 +740,13 @@ function compute_cluster_assignment_log_likelihood(cluster::Int64, cluster_suffi
 end
 
 function compute_arrivals_log_likelihood(sufficient_stats::SufficientStatistics, 
-                                         cluster_parameters::NtlParameters{T}) where {T <: GeometricArrivals}
+                                         cluster_parameters::NtlParameters{T}, auxillary_variables) where {T <: GeometricArrivals}
     phi_posterior = compute_arrival_distribution_posterior(sufficient_stats, cluster_parameters)
     return logbeta(phi_posterior) - logbeta(cluster_parameters.arrival_distribution.prior)
 end
 
 function compute_arrivals_log_likelihood(sufficient_stats::SufficientStatistics,
-                                         cluster_parameters::NtlParameters{T}) where {T <: PoissonArrivals}
+                                         cluster_parameters::NtlParameters{T}, auxillary_variables) where {T <: PoissonArrivals}
     #alpha = cluster_parameters.arrival_distribution.alpha
     #beta = cluster_parameters.arrival_distribution.beta
     #arrival_times = findall(sufficient_stats.cluster.clusters) 
@@ -743,7 +774,8 @@ function compute_arrivals_log_likelihood(sufficient_stats::SufficientStatistics,
 end
 
 function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D},
-                                           cluster_parameters::DpParameters) where {C <: MixtureSufficientStatistics, D}
+                                           cluster_parameters::DpParameters,
+                                           auxillary_variables) where {C <: MixtureSufficientStatistics, D}
     num_observations = sufficient_stats.cluster.num_observations
     num_observations = num_observations[num_observations .> 0]
     num_clusters = length(num_observations)
@@ -755,7 +787,8 @@ function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistic
 end
 
 function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D}, 
-                                           cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
+                                           cluster_parameters::ParametricArrivalsClusterParameters{T},
+                                           auxillary_variables) where 
                                            {T, C <: MixtureSufficientStatistics, D}
     log_likelihood = 0
     clusters = get_clusters(sufficient_stats.cluster)
@@ -763,12 +796,13 @@ function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistic
         log_likelihood += compute_cluster_assignment_log_likelihood(cluster, sufficient_stats.cluster, 
                                                                     cluster_parameters)
     end
-    log_likelihood += compute_arrivals_log_likelihood(sufficient_stats, cluster_parameters)
+    log_likelihood += compute_arrivals_log_likelihood(sufficient_stats, cluster_parameters, auxillary_variables)
     return log_likelihood
 end
 
 function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D},
-                                           cluster_parameters::ParametricArrivalsClusterParameters{T}) where
+                                           cluster_parameters::ParametricArrivalsClusterParameters{T},
+                                           auxillary_variables) where
                                            {T, C <: HmmSufficientStatistics, D}
     log_likelihood = 0
     clusters = get_clusters(sufficient_stats.cluster)
@@ -788,23 +822,27 @@ function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistic
 end
 
 function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D}, 
-                                           cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
+                                           cluster_parameters::ParametricArrivalsClusterParameters{T},
+                                           auxillary_variables) where 
                                            {T, C <: ChangepointSufficientStatistics, D}
     log_likelihood = compute_arrivals_log_likelihood(sufficient_stats, cluster_parameters)
     return log_likelihood
 end
 
 function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D}, 
-                                           cluster_parameters::DpParameters) where 
+                                           cluster_parameters::DpParameters, auxillary_variables) where 
                                            {C <: ChangepointSufficientStatistics, D}
     return NaN
 end
 
-function compute_joint_log_likelihood(sufficient_stats::SufficientStatistics, model)
+function compute_joint_log_likelihood(sufficient_stats::SufficientStatistics, model, auxillary_variables)
     data_parameters = model.data_parameters
     cluster_parameters = model.cluster_parameters
-    log_likelihood = compute_data_log_likelihood(sufficient_stats, data_parameters)
-    log_likelihood += compute_assignment_log_likelihood(sufficient_stats, cluster_parameters)
+    data_log_likelihood = compute_data_log_likelihood(sufficient_stats, data_parameters, auxillary_variables)
+    @assert(!isnan(data_log_likelihood))
+    assignment_log_likelihood = compute_assignment_log_likelihood(sufficient_stats, cluster_parameters, auxillary_variables)
+    @assert(!isnan(assignment_log_likelihood))
+    log_likelihood = data_log_likelihood + assignment_log_likelihood
     return log_likelihood
 end
 
