@@ -95,7 +95,8 @@ function random_initial_assignment!(instances::Matrix, data::Matrix, sufficient_
             cluster = observation
             append!(clusters, cluster)
         else
-            clusters_to_sample = clusters[clusters .> observation - sampler.observation_window]
+            clusters_to_sample = clusters[clusters .< observation]
+            clusters_to_sample = clusters_to_sample[maximum([1, end - sampler.proposal_radius]):end]
             cluster = rand(clusters_to_sample)
         end
         add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model, auxillary_variables)
@@ -148,11 +149,7 @@ function sample!(instances, iteration, data, sufficient_stats, model, auxillary_
 end
 
 function propose_cluster(previous_cluster, observation, sufficient_stats, sampler::MetropolisHastingsSampler)
-    start_index = maximum([1, observation - sampler.observation_window])
-    clusters = findall(sufficient_stats.cluster.clusters[start_index:observation-1])
-    if observation - sampler.observation_window > 0
-        clusters .+= (observation - sampler.observation_window - 1)
-    end
+    clusters = findall(sufficient_stats.cluster.clusters[1:observation-1])
     if !(previous_cluster in clusters)
         push!(clusters, previous_cluster)
     end
@@ -162,8 +159,8 @@ function propose_cluster(previous_cluster, observation, sufficient_stats, sample
     sort!(clusters)
     num_clusters = length(clusters)
     center_index = findfirst(clusters .=== previous_cluster)
-    start_index = maximum([1, center_index - sampler.cluster_radius])
-    stop_index = minimum([num_clusters, center_index + sampler.cluster_radius])
+    start_index = maximum([1, center_index - sampler.proposal_radius])
+    stop_index = minimum([num_clusters, center_index + sampler.proposal_radius])
     sampled_index = rand(start_index:stop_index)
     return (clusters[sampled_index], -log(stop_index - start_index))
 end
@@ -194,9 +191,12 @@ end
 
 function sample!(instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler::MetropolisHastingsSampler)
     n = sufficient_stats.n 
+    num_accepted = 0
+    num_proposals = 0
     for observation = 1:n
         previous_cluster = instances[observation, iteration]
         if (observation > previous_cluster) || (observation === previous_cluster && sufficient_stats.cluster.num_observations[previous_cluster] === 1)
+            num_proposals += 1
             remove_observation!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
 
             previous_cluster_log_weight = data_log_predictive(observation, previous_cluster, sufficient_stats.data, model.data_parameters, 
@@ -234,11 +234,20 @@ function sample!(instances, iteration, data, sufficient_stats, model, auxillary_
             log_uniform_variate = log(rand(Uniform(0, 1), 1)[1])
             if log_uniform_variate < log_acceptance_ratio
                 final_cluster = proposed_cluster
+                num_accepted += 1
             else
                 final_cluster = previous_cluster
             end
             add_observation!(observation, final_cluster, instances, iteration, data, sufficient_stats, model, 
                              auxillary_variables)
+        end
+    end
+    acceptance_rate = num_accepted/num_proposals
+    if sampler.adaptive
+        if acceptance_rate > 0.231
+            sampler.proposal_radius += 1
+        elseif acceptance_rate < 0.231
+            sampler.proposal_radius = maximum([sampler.proposal_radius - 1, 1])
         end
     end
 end
