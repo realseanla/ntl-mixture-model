@@ -18,6 +18,7 @@ using ..Samplers: MetropolisWithinGibbsSampler, MetropolisHastingsSampler
 using ..Utils: logbeta, logmvbeta, log_multinomial_coeff, gumbel_max, isnothing, compute_normalized_weights
 using ..Utils: effective_sample_size, hist
 using ..Utils: mvt_logpdf, logfactorial
+using ..Utils: hasproperty
 
 using Distributions
 using LinearAlgebra
@@ -120,25 +121,71 @@ function random_initial_assignment!(instances, data, sufficient_stats, model::Ch
 end
 
 function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) where {T <: Real}
+    if hasproperty(model.cluster_parameters, :arrival_distribution)
+        sample_arrival_parameter_posterior = model.cluster_parameters.arrival_distribution.sample_parameter_posterior
+    else 
+        sample_arrival_parameter_posterior = false 
+    end
     n = size(data)[2]
     instances = Array{Int64}(undef, n, sampler.num_iterations + sampler.num_burn_in)
     log_likelihoods = Vector{Float64}(undef, sampler.num_iterations + sampler.num_burn_in)
     n = size(data)[2]
     sufficient_stats = prepare_sufficient_statistics(model, data)
     auxillary_variables = prepare_auxillary_variables(model, data)
+    if sample_arrival_parameter_posterior
+        arrival_parameter_posterior = prepare_arrival_parameter_posterior(model.cluster_parameters, sampler)
+    end
     # Assign all of the observations to the first cluster
     random_initial_assignment!(instances, data, sufficient_stats, model, auxillary_variables, sampler)
     log_likelihoods[1] = compute_joint_log_likelihood(sufficient_stats, model, auxillary_variables)
-    #for iteration = ProgressBar(2:(sampler.num_iterations + sampler.num_burn_in), printing_delay=0.001)
+    if sample_arrival_parameter_posterior
+        arrival_parameter_posterior[1] = sample_arrival_posterior(sufficient_stats, auxillary_variables, model.cluster_parameters)
+    end
     @showprogress for iteration = 2:(sampler.num_iterations + sampler.num_burn_in)
         instances[:, iteration] = instances[:, iteration-1]
         sample!(instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler) 
         gibbs_sample!(auxillary_variables, sufficient_stats, model, data, instances[:, iteration])
         log_likelihoods[iteration] = compute_joint_log_likelihood(sufficient_stats, model, auxillary_variables)
+        if sample_arrival_parameter_posterior
+            arrival_parameter_posterior[iteration] = sample_arrival_posterior(sufficient_stats, auxillary_variables, 
+                                                                              model.cluster_parameters)
+        end
     end
     output_iterations = Vector((sampler.num_burn_in+1):(sampler.num_iterations + sampler.num_burn_in))
     output_iterations = output_iterations[output_iterations .% sampler.skip .=== 0]
-    return (instances[:, output_iterations], log_likelihoods[output_iterations])
+    if sample_arrival_parameter_posterior
+        return (instances[:, output_iterations], log_likelihoods[output_iterations], arrival_parameter_posterior[output_iterations])
+    else 
+        return (instances[:, output_iterations], log_likelihoods[output_iterations])
+    end
+end
+
+function prepare_arrival_parameter_posterior(::NtlParameters{T}, sampler::MetropolisWithinGibbsSampler) where {T <: GeometricArrivals}
+    return Array{Float64}(undef, (sampler.num_iterations + sampler.num_burn_in))
+end
+
+function prepare_arrival_parameter_posterior(::NtlParameters{T}, sampler::MetropolisWithinGibbsSampler) where {T <: PoissonArrivals}
+    return Array{Float64}(undef, (sampler.num_iterations + sampler.num_burn_in))
+end
+
+function prepare_arrival_parameter_posterior(::DpParameters, sampler::MetropolisWithinGibbsSampler)
+    return Array{Float64}(undef, (sampler.num_iterations + sampler.num_burn_in))
+end
+
+function sample_arrival_posterior(sufficient_stats, auxillary_variables, cluster_parameters::NtlParameters{T}) where {T <: GeometricArrivals}
+    posterior_parameters = compute_arrival_distribution_posterior(sufficient_stats, cluster_parameters)
+    beta_distribution = Beta(posterior_parameters[1], posterior_parameters[2])
+    return rand(beta_distribution, 1)[1]
+end
+
+function sample_arrival_posterior(sufficient_stats, auxillary_variables, cluster_parameters::NtlParameters{T}) where {T <: PoissonArrivals}
+    posterior_alpha, posterior_beta = compute_arrival_distribution_posterior(sufficient_stats, cluster_parameters)
+    gamma_distribution = Gamma(posterior_alpha, posterior_gamma)
+    return rand(gamma_distribution, 1)[1]
+end
+
+function sample_arrival_posterior(sufficient_stats, auxillary_variables, cluster_parameters::DpParameters) 
+   return NaN 
 end
 
 function sample!(instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler::GibbsSampler)

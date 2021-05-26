@@ -77,4 +77,8 @@ function plot_num_clusters(markov_chain)
          xlabel="Iteration", ylabel="Number of clusters", legend=false)
 end
 
+function plot_trace(values; ylabel="trace")
+    plot(1:length(values), values, seriestype=:line, xlabel="Iteration", ylabel=ylabel, legend=false)
+end
+
 end

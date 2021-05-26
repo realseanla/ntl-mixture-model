@@ -94,11 +94,19 @@ abstract type ArrivalDistribution end
 
 struct GeometricArrivals <: ArrivalDistribution
     prior::Vector{Float64}
+    sample_parameter_posterior::Bool 
+    function GeometricArrivals(;prior=[1,1], sample_parameter_posterior=false)
+        new(prior, sample_parameter_posterior)
+    end
 end
 
 struct PoissonArrivals <: ArrivalDistribution 
     alpha::Float64
     beta::Float64
+    sample_parameter_posterior::Bool
+    function PoissonArrivals(;alpha=1, beta=10, sample_parameter_posterior=false)
+        new(alpha, beta, sample_parameter_posterior)
+    end
 end
 
 struct PitmanYorArrivals <: ArrivalDistribution

@@ -162,4 +162,6 @@ function minVI(posterior_similarity_matrix, iterations)
     return clustering
 end
 
+hasproperty(x, s::Symbol) = s in fieldnames(typeof(x))
+
 end
