@@ -11,11 +11,17 @@ struct GibbsSampler <: MetropolisWithinGibbsSampler
     num_iterations::Int64
     num_burn_in::Int64
     skip::Int64
-    function GibbsSampler(;num_iterations::Int64=1000, num_burn_in::Int64=0, skip::Int64=1)
+    random_assignment::Bool
+    assignment_type::String
+    function GibbsSampler(;num_iterations::Int64=1000, num_burn_in::Int64=0, skip::Int64=1, 
+                          random_assignment=true, assignment_type="same")
         if num_iterations < 1
             error("Number of iterations should be positive.")
         end
-        return new(num_iterations, num_burn_in, skip)
+        if !random_assignment && !(assignment_type in ["same", "different"])
+            error("Initial assignment can only be one of 'same' or 'different'")
+        end
+        return new(num_iterations, num_burn_in, skip, random_assignment, assignment_type)
     end
 end
 
@@ -25,8 +31,14 @@ mutable struct MetropolisHastingsSampler <: MetropolisWithinGibbsSampler
     proposal_radius::Int64 
     skip::Int64
     adaptive::Bool
-    function MetropolisHastingsSampler(;num_iterations=1000, num_burn_in=1000, proposal_radius=5, skip=1, adaptive=false)
-        return new(num_iterations, num_burn_in, proposal_radius, skip, adaptive)
+    random_assignment::Bool
+    assignment_type::String
+    function MetropolisHastingsSampler(;num_iterations=1000, num_burn_in=1000, proposal_radius=5, skip=1, 
+                                       adaptive=false, random_assignment=true, assignment_type="same")
+        if !random_assignment && !(assignment_type in ["same", "different"])
+            error("Initial assignment can only be one of 'same' or 'different'")
+        end
+        return new(num_iterations, num_burn_in, proposal_radius, skip, adaptive, random_assignment, assignment_type)
     end
 end
 

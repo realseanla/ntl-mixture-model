@@ -1,7 +1,8 @@
 module Plot
 
-using ..Utils: compute_co_occurrence_matrix
+using ..Utils: compute_co_occurrence_matrix, ari_over_markov_chain
 using Plots
+using Statistics
 
 function plot_assignments(assignments::Vector{Int64})
     plot(1:length(assignments), assignments, seriestype = :scatter, xlabel="Observation", ylabel="Cluster", 
@@ -79,6 +80,13 @@ end
 
 function plot_trace(values; ylabel="trace")
     plot(1:length(values), values, seriestype=:line, xlabel="Iteration", ylabel=ylabel, legend=false)
+end
+
+function plot_ari_posterior_distribution(true_clustering::Vector{Int64}, assignment_posterior::Matrix{Int64})
+    ari_posterior = ari_over_markov_chain(true_clustering, assignment_posterior)
+    mean_ari = round(mean(ari_posterior), digits=3)
+    plot(ari_posterior, seriestype=:histogram, legend=true, label="")
+    vline!([mean_ari], label="Mean ARI = $mean_ari")
 end
 
 end

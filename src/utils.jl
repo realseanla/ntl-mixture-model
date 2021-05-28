@@ -138,6 +138,11 @@ function adjusted_rand_index(c1::Vector{Int64}, c2::Vector{Int64})
     return Clustering.randindex(c1,c2)[1]
 end
 
+function ari_over_markov_chain(true_clustering::Vector{Int64}, markov_chain::Matrix{Int64})
+    posterior_ari = vec(mapslices(z->adjusted_rand_index(true_clustering, z), markov_chain, dims=1))
+    return posterior_ari
+end
+
 function minbinder(posterior_similarity_matrix::Matrix{Float64}, iterations::Matrix{Int64})
     draws = Matrix(transpose(iterations))
     R"library('mcclust')"

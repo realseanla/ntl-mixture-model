@@ -120,6 +120,24 @@ function random_initial_assignment!(instances, data, sufficient_stats, model::Ch
     end
 end
 
+function deterministic_initial_assignment!(instances, data, sufficient_stats, model::Mixture, auxillary_variables, 
+                                           sampler::MetropolisWithinGibbsSampler)
+    n = sufficient_stats.n
+    iteration = 1
+    cluster = 1
+    for observation = 1:n
+        if sampler.assignment_type === "same"
+            cluster = 1
+        elseif sampler.assignment_type === "different"
+            cluster = observation
+        else
+            error("Error in assignment type")
+        end
+        add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model, auxillary_variables)
+    end
+    random_initial_assignment!(auxillary_variables, sufficient_stats, vec(instances[:, iteration]), model, data)
+end
+
 function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) where {T <: Real}
     if hasproperty(model.cluster_parameters, :arrival_distribution)
         sample_arrival_parameter_posterior = model.cluster_parameters.arrival_distribution.sample_parameter_posterior
@@ -127,24 +145,26 @@ function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) wher
         sample_arrival_parameter_posterior = false 
     end
     n = size(data)[2]
-    instances = Array{Int64}(undef, n, sampler.num_iterations + sampler.num_burn_in)
+    assignments = Array{Int64}(undef, n, sampler.num_iterations + sampler.num_burn_in)
     log_likelihoods = Vector{Float64}(undef, sampler.num_iterations + sampler.num_burn_in)
-    n = size(data)[2]
     sufficient_stats = prepare_sufficient_statistics(model, data)
     auxillary_variables = prepare_auxillary_variables(model, data)
     if sample_arrival_parameter_posterior
         arrival_parameter_posterior = prepare_arrival_parameter_posterior(model.cluster_parameters, sampler)
     end
-    # Assign all of the observations to the first cluster
-    random_initial_assignment!(instances, data, sufficient_stats, model, auxillary_variables, sampler)
+    if sampler.random_assignment
+        random_initial_assignment!(assignments, data, sufficient_stats, model, auxillary_variables, sampler)
+    else
+        deterministic_initial_assignment!(assignments, data, sufficient_stats, model, auxillary_variables, sampler)
+    end
     log_likelihoods[1] = compute_joint_log_likelihood(sufficient_stats, model, auxillary_variables)
     if sample_arrival_parameter_posterior
         arrival_parameter_posterior[1] = sample_arrival_posterior(sufficient_stats, auxillary_variables, model.cluster_parameters)
     end
     @showprogress for iteration = 2:(sampler.num_iterations + sampler.num_burn_in)
-        instances[:, iteration] = instances[:, iteration-1]
-        sample!(instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler) 
-        gibbs_sample!(auxillary_variables, sufficient_stats, model, data, instances[:, iteration])
+        assignments[:, iteration] = assignments[:, iteration-1]
+        sample!(assignments, iteration, data, sufficient_stats, model, auxillary_variables, sampler) 
+        gibbs_sample!(auxillary_variables, sufficient_stats, model, data, assignments[:, iteration])
         log_likelihoods[iteration] = compute_joint_log_likelihood(sufficient_stats, model, auxillary_variables)
         if sample_arrival_parameter_posterior
             arrival_parameter_posterior[iteration] = sample_arrival_posterior(sufficient_stats, auxillary_variables, 
@@ -153,11 +173,12 @@ function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) wher
     end
     output_iterations = Vector((sampler.num_burn_in+1):(sampler.num_iterations + sampler.num_burn_in))
     output_iterations = output_iterations[output_iterations .% sampler.skip .=== 0]
+    mcmc_output = Dict{String, Array}("assignments" => assignments[:, output_iterations],
+                                      "log likelihood" => log_likelihoods[output_iterations])
     if sample_arrival_parameter_posterior
-        return (instances[:, output_iterations], log_likelihoods[output_iterations], arrival_parameter_posterior[output_iterations])
-    else 
-        return (instances[:, output_iterations], log_likelihoods[output_iterations])
+        mcmc_output["arrival posterior"] = arrival_parameter_posterior[output_iterations]
     end
+    return mcmc_output
 end
 
 function prepare_arrival_parameter_posterior(::NtlParameters{T}, sampler::MetropolisWithinGibbsSampler) where {T <: GeometricArrivals}
