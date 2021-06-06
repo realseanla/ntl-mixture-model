@@ -65,7 +65,7 @@ end
 
 function random_initial_assignment!(instances::Matrix, data::Matrix, sufficient_stats::SufficientStatistics{C, D}, 
                                     model::Union{Mixture, HiddenMarkovModel}, auxillary_variables::AuxillaryVariables{A, F},
-                                    sampler::GibbsSampler) where {C, D, A, F}
+                                    sampler::MetropolisWithinGibbsSampler) where {C, D, A, F}
     n = sufficient_stats.n
     iteration = 1
     cluster = 1

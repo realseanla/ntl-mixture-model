@@ -92,9 +92,13 @@ function effective_sample_size(log_weights)
     return ess
 end
 
-function maximum_a_posterior(instances, log_likelihoods)
-    max_value = maximum(log_likelihoods)
-    return instances[:, log_likelihoods .=== max_value]
+function map_estimate(instances, log_likelihoods; num_burn_in=0)
+    @assert size(instances)[2] === length(log_likelihoods)
+    burned_in_log_likelihoods = log_likelihoods[num_burn_in+1:end]
+    max_value = maximum(burned_in_log_likelihoods)
+    burned_in_instances = instances[:, num_burn_in+1:end]
+    map_index = findfirst(burned_in_log_likelihoods .=== max_value)
+    return burned_in_instances[:, map_index]
 end
 
 function num_clusters(instances)
@@ -155,6 +159,11 @@ function minbinder(posterior_similarity_matrix::Matrix{Float64}, iterations::Mat
     return clustering
 end
 
+function minbinder(markov_chain::Matrix{Int64}; num_burn_in=0)
+    psm = compute_co_occurrence_matrix(markov_chain[:, (num_burn_in+1):end])
+    return minbinder(psm, markov_chain)
+end
+
 function minVI(posterior_similarity_matrix, iterations)
     draws = Matrix(transpose(iterations))
     R"library('mcclust')"
@@ -165,6 +174,11 @@ function minVI(posterior_similarity_matrix, iterations)
     clustering = vec(rcopy(R"vi_clustering$cl"))
     R"rm(list = ls())"
     return clustering
+end
+
+function minVI(markov_chain::Matrix{Int64}; num_burn_in=0)
+    psm = compute_co_occurrence_matrix(markov_chain[:, (num_burn_in+1):end])
+    return minVI(psm, markov_chain[:, (num_burn_in+1):end])
 end
 
 hasproperty(x, s::Symbol) = s in fieldnames(typeof(x))
