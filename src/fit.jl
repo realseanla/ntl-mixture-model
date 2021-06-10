@@ -1333,7 +1333,7 @@ function new_cluster_log_predictive(sufficient_stats::SufficientStatistics{C, D}
     psi_posterior = deepcopy(cluster_parameters.prior)
     psi_posterior[2] += num_complement
     phi_posterior = compute_arrival_distribution_posterior(sufficient_stats, cluster_parameters)
-    return log(phi_posterior[1]) - log(sum(phi_posterior)) + logbeta(psi_posterior)
+    return log(phi_posterior[1]) - log(sum(phi_posterior)) + logbeta(psi_posterior) - logbeta(cluster_parameters.prior)
 end
 
 function existing_cluster_log_predictive(sufficient_stats::SufficientStatistics{C, D},

@@ -69,7 +69,7 @@ function plot_arrival_posterior_probabilities(markov_chain::Matrix{Int64}, true_
     for i = (num_burn_in+1):num_iterations
         arrival_counts += (markov_chain[:, i] .=== observations)
     end
-    arrival_posterior_probabilities = arrival_counts / num_iterations
+    arrival_posterior_probabilities = arrival_counts / (num_iterations - num_burn_in)
 
     num_clusters = maximum(true_clustering)
     clusters = Array{Int64}(1:num_clusters)
