@@ -247,18 +247,6 @@ function compute_cluster_log_predictive(observation, cluster, sufficient_stats, 
     return log_predictive
 end
 
-function compute_cluster_log_predictive(observation, cluster, sufficient_stats, model::Mixture{C, D}) where {C <: DpParameters, D}
-    log_predictive = 0
-    cluster_psi = compute_stick_breaking_posterior(cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
-    log_predictive += log(cluster_psi[1]) - log(sum(cluster_psi))
-    younger_clusters = (cluster+1):(observation-1)
-    for younger_cluster = younger_clusters 
-        younger_cluster_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
-        log_predictive += log(younger_cluster_psi[2]) - log(sum(younger_cluster_psi))
-    end
-    return log_predictive
-end
-
 function sample!(instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler::MetropolisHastingsSampler)
     n = sufficient_stats.n 
     num_accepted = 0
@@ -490,9 +478,10 @@ end
 
 function prepare_sufficient_statistics(model, data)
     n = size(data)[2]
+    num_assigned = 0
     cluster_sufficient_stats = prepare_cluster_sufficient_statistics(model, n)
     data_sufficient_stats = prepare_data_sufficient_statistics(data, model.data_parameters)
-    return SufficientStatistics(n, cluster_sufficient_stats, data_sufficient_stats)
+    return SufficientStatistics(n, num_assigned, cluster_sufficient_stats, data_sufficient_stats)
 end
 
 function prepare_data_sufficient_statistics(data::Matrix{Float64}, data_parameters::GaussianParameters)
@@ -600,7 +589,6 @@ function compute_auxillary_data_log_likelihood(sufficient_stats, data_parameters
         dirichlet_posterior = vec(sufficient_stats.data.topic_token_posterior[:, topic])
         counts = vec(sufficient_stats.data.topic_token_frequencies[:, topic])
         topic_log_likelihood = log_multinomial_coeff(counts) + logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
-        @assert(!isnan(topic_log_likelihood))
         log_likelihood += topic_log_likelihood
     end
     return log_likelihood
@@ -611,11 +599,9 @@ function compute_data_log_likelihood(sufficient_stats::SufficientStatistics, dat
     log_likelihood = 0
     for cluster = clusters
         cluster_data_log_likelihood = compute_cluster_data_log_likelihood(cluster, sufficient_stats, data_parameters, auxillary_variables)
-        @assert(!isnan(cluster_data_log_likelihood))
         log_likelihood += cluster_data_log_likelihood
     end
     aux_log_likelihood = compute_auxillary_data_log_likelihood(sufficient_stats, data_parameters, auxillary_variables)
-    @assert(!isnan(aux_log_likelihood))
     log_likelihood += aux_log_likelihood
     return log_likelihood
 end
@@ -663,9 +649,7 @@ function compute_joint_log_likelihood(sufficient_stats::SufficientStatistics, mo
     data_parameters = model.data_parameters
     cluster_parameters = model.cluster_parameters
     data_log_likelihood = compute_data_log_likelihood(sufficient_stats, data_parameters, auxillary_variables)
-    @assert(!isnan(data_log_likelihood))
     assignment_log_likelihood = compute_assignment_log_likelihood(sufficient_stats, cluster_parameters, auxillary_variables)
-    @assert(!isnan(assignment_log_likelihood))
     log_likelihood = data_log_likelihood + assignment_log_likelihood
     return log_likelihood
 end
@@ -808,6 +792,7 @@ function remove_observation!(observation::Int64, instances::Matrix{Int64}, itera
     cluster = instances[observation, iteration]
 
     instances[observation, iteration] = n+1 
+    sufficient_stats.num_assigned -= 1
     update_cluster_sufficient_statistics!(sufficient_stats, cluster, update_type="remove")
     update_data_sufficient_statistics!(sufficient_stats, cluster, observation, model, data, auxillary_variables, 
                                        update_type="remove")
@@ -838,6 +823,7 @@ function add_observation!(observation::Int64, cluster::Int64, instances::Matrix{
                                                  model.data_parameters)
     end
     instances[observation, iteration] = cluster
+    sufficient_stats.num_assigned += 1
     update_cluster_sufficient_statistics!(sufficient_stats, cluster, update_type="add")
     update_data_sufficient_statistics!(sufficient_stats, cluster, observation, model, data, auxillary_variables, 
                                        update_type="add")
@@ -857,11 +843,11 @@ end
 function compute_arrival_distribution_posterior(sufficient_stats::SufficientStatistics{C, D},
                                                 cluster_parameters::ParametricArrivalsClusterParameters{T}) where 
                                                 {T <: GeometricArrivals, C <: Union{MixtureSufficientStatistics, HmmSufficientStatistics}, D}
-    n = sufficient_stats.n
+    num_assigned = sufficient_stats.num_assigned
     num_clusters = length(get_clusters(sufficient_stats.cluster))
     phi_posterior = deepcopy(cluster_parameters.arrival_distribution.prior)
     phi_posterior[1] += num_clusters - 1
-    phi_posterior[2] += n - num_clusters 
+    phi_posterior[2] += num_assigned - num_clusters 
     return phi_posterior
 end
 
@@ -994,6 +980,18 @@ function compute_stick_breaking_posterior(cluster::Int64, sufficient_stats::Suff
     posterior = compute_stick_breaking_posterior(cluster, sufficient_stats.cluster, 
                                                  ntl_parameters.prior, missing_observation=missing_observation)
     return posterior
+end
+
+function compute_cluster_log_predictive(observation, cluster, sufficient_stats, model::Mixture{C, D}) where {C <: NtlParameters, D}
+    log_predictive = 0
+    cluster_psi = compute_stick_breaking_posterior(cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
+    log_predictive += log(cluster_psi[1]) - log(sum(cluster_psi))
+    younger_clusters = (cluster+1):(observation-1)
+    for younger_cluster = younger_clusters 
+        younger_cluster_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
+        log_predictive += log(younger_cluster_psi[2]) - log(sum(younger_cluster_psi))
+    end
+    return log_predictive
 end
 
 function compute_cluster_log_predictives(observation::Int64, clusters::Vector{Int64}, 

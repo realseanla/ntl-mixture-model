@@ -235,8 +235,9 @@ struct MultinomialSufficientStatistics <: DataSufficientStatistics
     end
 end
 
-struct SufficientStatistics{C<:ClusterSufficientStatistics, D<:DataSufficientStatistics}
+mutable struct SufficientStatistics{C<:ClusterSufficientStatistics, D<:DataSufficientStatistics}
     n::Int
+    num_assigned::Int64
     cluster::C
     data::D
 end
