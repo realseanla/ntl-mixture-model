@@ -96,7 +96,7 @@ function random_initial_assignment!(instances::Matrix, data::Matrix, sufficient_
             append!(clusters, cluster)
         else
             clusters_to_sample = clusters[clusters .< observation]
-            clusters_to_sample = clusters_to_sample[maximum([1, end - sampler.proposal_radius]):end]
+            clusters_to_sample = clusters_to_sample[maximum([1, end - 5]):end]
             cluster = rand(clusters_to_sample)
         end
         add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model, auxillary_variables)
@@ -239,7 +239,10 @@ function compute_cluster_log_predictive(observation, cluster, sufficient_stats, 
     log_predictive = 0
     cluster_psi = compute_stick_breaking_posterior(cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
     log_predictive += log(cluster_psi[1]) - log(sum(cluster_psi))
-    younger_clusters = (cluster+1):(observation-1)
+    younger_clusters_range = Vector{Int64}((cluster+1):(observation-1))
+    clusters = get_clusters(sufficient_stats.cluster)
+    younger_clusters_mask = clusters .∈ Ref(younger_clusters_range)
+    younger_clusters = clusters[younger_clusters_mask]
     for younger_cluster = younger_clusters 
         younger_cluster_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
         log_predictive += log(younger_cluster_psi[2]) - log(sum(younger_cluster_psi))
@@ -982,18 +985,6 @@ function compute_stick_breaking_posterior(cluster::Int64, sufficient_stats::Suff
     return posterior
 end
 
-function compute_cluster_log_predictive(observation, cluster, sufficient_stats, model::Mixture{C, D}) where {C <: NtlParameters, D}
-    log_predictive = 0
-    cluster_psi = compute_stick_breaking_posterior(cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
-    log_predictive += log(cluster_psi[1]) - log(sum(cluster_psi))
-    younger_clusters = (cluster+1):(observation-1)
-    for younger_cluster = younger_clusters 
-        younger_cluster_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats.cluster, model.cluster_parameters.prior)
-        log_predictive += log(younger_cluster_psi[2]) - log(sum(younger_cluster_psi))
-    end
-    return log_predictive
-end
-
 function compute_cluster_log_predictives(observation::Int64, clusters::Vector{Int64}, 
                                          sufficient_stats, ntl_parameters::NtlParameters)
     # Not strictly the number of observations
@@ -1004,7 +995,7 @@ function compute_cluster_log_predictives(observation::Int64, clusters::Vector{In
     n = maximum([n, observation])
     cluster_log_weights = zeros(Float64, n)
     complement_log_weights = zeros(Float64, n)
-    complement_log_weights_tree = FenwickTree{Float64}(n)
+    #complement_log_weights_tree = FenwickTree{Float64}(n)
     psi_parameters = Array{Int64}(undef, 2, n)
     logbetas = Array{Float64}(undef, n)
     new_num_complement = compute_num_complement(observation, ntl_sufficient_stats, missing_observation=observation)
@@ -1019,7 +1010,7 @@ function compute_cluster_log_predictives(observation::Int64, clusters::Vector{In
             log_denom = log(sum(cluster_psi))
             cluster_log_weights[cluster] = log(cluster_psi[1]) - log_denom
             complement_log_weights[cluster] = log(cluster_psi[2]) - log_denom
-            inc!(complement_log_weights_tree, cluster, complement_log_weights[cluster])
+            #inc!(complement_log_weights_tree, cluster, complement_log_weights[cluster])
             if observation < cluster
                 logbetas[cluster] = logbeta(cluster_psi)
             end
@@ -1034,8 +1025,8 @@ function compute_cluster_log_predictives(observation::Int64, clusters::Vector{In
             end
             # Clusters younger than the current cluster
             younger_clusters = (cluster+1):(observation-1)
-            log_weight += prefixsum(complement_log_weights_tree, observation-1) - prefixsum(complement_log_weights_tree, cluster)
-            #log_weight += sum(complement_log_weights[younger_clusters])
+            #log_weight += prefixsum(complement_log_weights_tree, observation-1) - prefixsum(complement_log_weights_tree, cluster)
+            log_weight += sum(complement_log_weights[younger_clusters])
             log_weights[i] = log_weight
         else # observation < cluster
             cluster_num_obs = ntl_sufficient_stats.num_observations[cluster]
