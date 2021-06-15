@@ -971,23 +971,31 @@ function compute_stick_breaking_posterior(cluster::Int64, sufficient_stats::Suff
 end
 
 function compute_cluster_log_predictive(observation, cluster, sufficient_stats, model::Mixture{C, D};
-                                        psi_parameters=zeros(Float64, 0)) where {C <: NtlParameters, D}
+                                        psi_parameters::Matrix{Float64}=Array{Float64}(undef, 2, 0)) where {C <: NtlParameters, D}
     log_predictive = 0
     # Clusters younger than the current cluster
     younger_clusters_range = Vector{Int64}((cluster+1):(observation-1))
-    clusters = get_cluster(sufficient_stats.cluster)
+    clusters = get_clusters(sufficient_stats.cluster)
     younger_clusters_mask = clusters .∈ Ref(younger_clusters_range) 
     younger_clusters = clusters[younger_clusters_mask]
 
     if cluster < observation
         if cluster > 1
-            cluster_psi = compute_stick_breaking_posterior(cluster, sufficient_stats, model.cluster_parameters,
-                                                           missing_observation=observation)
+            if size(psi_parameters)[2] === 0
+                cluster_psi = compute_stick_breaking_posterior(cluster, sufficient_stats, model.cluster_parameters,
+                                                               missing_observation=observation)
+            else 
+                cluster_psi = vec(psi_parameters[:, cluster])
+            end
             log_predictive += log(cluster_psi[1]) - log(sum(cluster_psi))
         end
         for younger_cluster = younger_clusters
-            younger_cluster_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats, model.cluster_parameters,
-                                                                   missing_observation=observation)
+            if size(psi_parameters)[2] === 0 
+                younger_cluster_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats, model.cluster_parameters,
+                                                                       missing_observation=observation)
+            else 
+                younger_cluster_psi = vec(psi_parameters[:, younger_cluster])
+            end
             log_predictive += log(younger_cluster_psi[2]) - log(sum(younger_cluster_psi))
         end
     else # observation < cluster
@@ -1002,27 +1010,29 @@ function compute_cluster_log_predictive(observation, cluster, sufficient_stats, 
 
         younger_clusters_log_predictive = 0
         for younger_cluster = younger_clusters
-            younger_cluster_old_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats, model.cluster_parameters,
-                                                                       missing_observation=observation)
+            if size(psi_parameters)[2] === 0
+                younger_cluster_old_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats, model.cluster_parameters,
+                                                                           missing_observation=observation)
+            else 
+                younger_cluster_old_psi = vec(psi_parameters[:, younger_cluster])
+            end
             younger_cluster_new_psi = deepcopy(younger_cluster_old_psi)
             if observation === 1 && younger_cluster === youngest_cluster
-                younger_cluster_new_psi[1] = cluster_num_obs + 1 
+                younger_cluster_new_psi[2] = cluster_num_obs + model.cluster_parameters.prior[2] 
                 younger_cluster_old_psi = cluster_old_psi
             else
-                younger_cluster_new_psi[1] += cluster_num_obs
+                younger_cluster_new_psi[2] += cluster_num_obs
             end
             younger_clusters_log_predictive += logbeta(younger_cluster_new_psi) - logbeta(younger_cluster_old_psi)
         end
+        log_predictive = younger_clusters_log_predictive
         if observation > youngest_cluster
             new_num_complement = compute_num_complement(observation, sufficient_stats.cluster, missing_observation=observation)
             cluster_new_psi = deepcopy(cluster_old_psi)
             cluster_new_psi[1] += 1
             cluster_new_psi[2] = new_num_complement + model.cluster_parameters.prior[2]
-            new = cluster_new_psi
             cluster_log_predictive = logbeta(cluster_new_psi) - logbeta(cluster_old_psi)
-            log_predictive = cluster_log_predictive + younger_clusters_log_predictive
-        else
-            log_predictive = younger_clusters_log_predictive
+            log_predictive += cluster_log_predictive 
         end
     end
     return log_predictive
@@ -1031,14 +1041,8 @@ end
 function compute_cluster_log_predictives(observation::Int64, clusters::Vector{Int64}, 
                                          sufficient_stats, ntl_parameters::NtlParameters)
     # Not strictly the number of observations
-    ntl_sufficient_stats = sufficient_stats.cluster
-    num_clusters = length(clusters)
-    log_weights = Vector{Float64}(undef, num_clusters)
     n = maximum(clusters)
     n = maximum([n, observation])
-    cluster_log_weights = zeros(Float64, n)
-    complement_log_weights = zeros(Float64, n)
-    #complement_log_weights_tree = FenwickTree{Float64}(n)
     psi_parameters = Array{Int64}(undef, 2, n)
     logbetas = Array{Float64}(undef, n)
     new_num_complement = compute_num_complement(observation, ntl_sufficient_stats, missing_observation=observation)
@@ -1091,7 +1095,7 @@ function compute_cluster_log_predictives(observation::Int64, clusters::Vector{In
                 younger_cluster_new_psi[1] = younger_cluster_old_psi[1]
                 younger_cluster_new_psi[2] = younger_cluster_old_psi[2]
                 if observation === 1 && younger_cluster === youngest_cluster
-                    younger_cluster_new_psi[1] = cluster_num_obs + 1 
+                    younger_cluster_new_psi[2] = cluster_num_obs + ntl_parameters.prior[2] 
                     younger_cluster_old_psi = cluster_old_psi
                 else
                     younger_cluster_new_psi[2] += cluster_num_obs
