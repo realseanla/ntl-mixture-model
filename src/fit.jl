@@ -96,7 +96,7 @@ function random_initial_assignment!(instances::Matrix, data::Matrix, sufficient_
             append!(clusters, cluster)
         else
             clusters_to_sample = clusters[clusters .< observation]
-            clusters_to_sample = clusters_to_sample[maximum([1, end - 5]):end]
+            clusters_to_sample = clusters_to_sample[maximum([1, end - sampler.proposal_radius]):end]
             cluster = rand(clusters_to_sample)
         end
         add_observation!(observation, cluster, instances, iteration, data, sufficient_stats, model, auxillary_variables)
@@ -220,6 +220,7 @@ end
 
 function propose_cluster(previous_cluster, observation, sufficient_stats, sampler::MetropolisHastingsSampler)
     clusters = findall(sufficient_stats.cluster.clusters[1:observation-1])
+    #clusters = get_clusters(sufficient_stats.cluster)
     if !(previous_cluster in clusters)
         push!(clusters, previous_cluster)
     end
@@ -231,8 +232,12 @@ function propose_cluster(previous_cluster, observation, sufficient_stats, sample
     center_index = findfirst(clusters .=== previous_cluster)
     start_index = maximum([1, center_index - sampler.proposal_radius])
     stop_index = minimum([num_clusters, center_index + sampler.proposal_radius])
-    sampled_index = rand(start_index:stop_index)
-    return (clusters[sampled_index], -log(stop_index - start_index))
+    clusters = clusters[start_index:stop_index]
+    if !(observation in clusters)
+        push!(clusters, observation)
+    end
+    cluster = rand(clusters)
+    return (cluster, -log(length(clusters)))
 end
 
 function sample!(instances, iteration, data, sufficient_stats, model, auxillary_variables, sampler::MetropolisHastingsSampler)
@@ -242,12 +247,13 @@ function sample!(instances, iteration, data, sufficient_stats, model, auxillary_
     for observation = 1:n
         previous_cluster = instances[observation, iteration]
         if (observation > previous_cluster) || (observation === previous_cluster && sufficient_stats.cluster.num_observations[previous_cluster] === 1)
+        #if true
             num_proposals += 1
             remove_observation!(observation, instances, iteration, data, sufficient_stats, model, auxillary_variables)
 
             previous_cluster_log_weight = data_log_predictive(observation, previous_cluster, sufficient_stats.data, model.data_parameters, 
                                                               data, auxillary_variables)
-            previous_cluster_log_weight += compute_cluster_log_predictive(observation, previous_cluster, sufficient_stats, model)
+            previous_cluster_log_weight += compute_cluster_log_predictive(observation, previous_cluster, sufficient_stats, model.cluster_parameters)
             if previous_cluster === observation 
                 previous_cluster_log_weight += new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
                                                                           auxillary_variables, previous_cluster)
@@ -262,7 +268,7 @@ function sample!(instances, iteration, data, sufficient_stats, model, auxillary_
             # Compute the joint likelihood of the proposal
             proposed_cluster_log_weight = data_log_predictive(observation, proposed_cluster, sufficient_stats.data, model.data_parameters,
                                                               data, auxillary_variables)
-            proposed_cluster_log_weight += compute_cluster_log_predictive(observation, proposed_cluster, sufficient_stats, model)
+            proposed_cluster_log_weight += compute_cluster_log_predictive(observation, proposed_cluster, sufficient_stats, model.cluster_parameters)
             if proposed_cluster === observation 
                 proposed_cluster_log_weight += new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
                                                                           auxillary_variables, proposed_cluster)
@@ -274,8 +280,8 @@ function sample!(instances, iteration, data, sufficient_stats, model, auxillary_
 
             (_, previous_cluster_proposal_log_weight) = propose_cluster(proposed_cluster, observation, sufficient_stats, sampler) 
 
-            log_acceptance_ratio = proposed_cluster_log_weight - previous_cluster_log_weight
-            log_acceptance_ratio += (previous_cluster_proposal_log_weight - proposal_log_weight)
+            log_acceptance_ratio = proposed_cluster_log_weight + previous_cluster_proposal_log_weight
+            log_acceptance_ratio -= (previous_cluster_log_weight + proposal_log_weight)
 
             log_uniform_variate = log(rand(Uniform(0, 1), 1)[1])
             if log_uniform_variate < log_acceptance_ratio
@@ -290,9 +296,9 @@ function sample!(instances, iteration, data, sufficient_stats, model, auxillary_
     end
     acceptance_rate = num_accepted/num_proposals
     if sampler.adaptive
-        if acceptance_rate > 0.231
+        if acceptance_rate > 0.3
             sampler.proposal_radius += 1
-        elseif acceptance_rate < 0.231
+        elseif acceptance_rate < 0.3
             sampler.proposal_radius = maximum([sampler.proposal_radius - 1, 1])
         end
     end
@@ -596,8 +602,12 @@ end
 
 function compute_cluster_assignment_log_likelihood(cluster::Int64, cluster_sufficient_stats::MixtureSufficientStatistics, 
                                                    cluster_parameters::NtlParameters{T}) where {T <: ArrivalDistribution}
-    psi_posterior = compute_stick_breaking_posterior(cluster, cluster_sufficient_stats, cluster_parameters.prior)
-    return logbeta(psi_posterior) - logbeta(cluster_parameters.prior)
+    if cluster > 1
+        psi_posterior = compute_stick_breaking_posterior(cluster, cluster_sufficient_stats, cluster_parameters.prior)
+        return logbeta(psi_posterior) - logbeta(cluster_parameters.prior)
+    else
+        return 0
+    end
 end
 
 function compute_arrivals_log_likelihood(sufficient_stats::SufficientStatistics, cluster_parameters::NtlParameters{T}, 
@@ -970,28 +980,31 @@ function compute_stick_breaking_posterior(cluster::Int64, sufficient_stats::Suff
     return posterior
 end
 
-function compute_cluster_log_predictive(observation, cluster, sufficient_stats, model::Mixture{C, D};
-                                        psi_parameters::Matrix{Float64}=Array{Float64}(undef, 2, 0)) where {C <: NtlParameters, D}
+function compute_cluster_log_predictive(observation, cluster, sufficient_stats, cluster_parameters::NtlParameters;
+                                        psi_parameters::Matrix=Array{Int64}(undef, 2, 0),
+                                        logbetas::Vector=Array{Float64}(undef, 0))
     log_predictive = 0
     # Clusters younger than the current cluster
-    younger_clusters_range = Vector{Int64}((cluster+1):(observation-1))
     clusters = get_clusters(sufficient_stats.cluster)
-    younger_clusters_mask = clusters .∈ Ref(younger_clusters_range) 
-    younger_clusters = clusters[younger_clusters_mask]
 
     if cluster < observation
         if cluster > 1
             if size(psi_parameters)[2] === 0
-                cluster_psi = compute_stick_breaking_posterior(cluster, sufficient_stats, model.cluster_parameters,
+                cluster_psi = compute_stick_breaking_posterior(cluster, sufficient_stats, cluster_parameters,
                                                                missing_observation=observation)
             else 
                 cluster_psi = vec(psi_parameters[:, cluster])
             end
             log_predictive += log(cluster_psi[1]) - log(sum(cluster_psi))
         end
+
+        # clusters younger than the current cluster
+        younger_clusters_range = Vector{Int64}((cluster+1):(observation-1))
+        younger_clusters_mask = clusters .∈ Ref(younger_clusters_range) 
+        younger_clusters = clusters[younger_clusters_mask]
         for younger_cluster = younger_clusters
             if size(psi_parameters)[2] === 0 
-                younger_cluster_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats, model.cluster_parameters,
+                younger_cluster_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats, cluster_parameters,
                                                                        missing_observation=observation)
             else 
                 younger_cluster_psi = vec(psi_parameters[:, younger_cluster])
@@ -1000,7 +1013,7 @@ function compute_cluster_log_predictive(observation, cluster, sufficient_stats, 
         end
     else # observation < cluster
         cluster_num_obs = sufficient_stats.cluster.num_observations[cluster]
-        cluster_old_psi = compute_stick_breaking_posterior(cluster, sufficient_stats, model.cluster_parameters,
+        cluster_old_psi = compute_stick_breaking_posterior(cluster, sufficient_stats, cluster_parameters,
                                                            missing_observation=observation)
         if sufficient_stats.cluster.num_observations[1] === 0
             youngest_cluster = 2
@@ -1009,29 +1022,42 @@ function compute_cluster_log_predictive(observation, cluster, sufficient_stats, 
         end
 
         younger_clusters_log_predictive = 0
+        # clusters younger than the observation
+        younger_clusters_range = Vector{Int64}((observation+1):(cluster-1))
+        younger_clusters_mask = clusters .∈ Ref(younger_clusters_range) 
+        younger_clusters = clusters[younger_clusters_mask]
+
         for younger_cluster = younger_clusters
             if size(psi_parameters)[2] === 0
-                younger_cluster_old_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats, model.cluster_parameters,
+                younger_cluster_old_psi = compute_stick_breaking_posterior(younger_cluster, sufficient_stats, cluster_parameters,
                                                                            missing_observation=observation)
             else 
                 younger_cluster_old_psi = vec(psi_parameters[:, younger_cluster])
             end
             younger_cluster_new_psi = deepcopy(younger_cluster_old_psi)
             if observation === 1 && younger_cluster === youngest_cluster
-                younger_cluster_new_psi[2] = cluster_num_obs + model.cluster_parameters.prior[2] 
+                younger_cluster_new_psi[2] = cluster_num_obs + cluster_parameters.prior[2] 
                 younger_cluster_old_psi = cluster_old_psi
             else
                 younger_cluster_new_psi[2] += cluster_num_obs
             end
-            younger_clusters_log_predictive += logbeta(younger_cluster_new_psi) - logbeta(younger_cluster_old_psi)
+            if length(logbetas) === 0
+                younger_clusters_log_predictive += logbeta(younger_cluster_new_psi) - logbeta(younger_cluster_old_psi)
+            else 
+                younger_clusters_log_predictive += logbeta(younger_cluster_new_psi) - logbetas[younger_cluster]
+            end
         end
         log_predictive = younger_clusters_log_predictive
         if observation > youngest_cluster
             new_num_complement = compute_num_complement(observation, sufficient_stats.cluster, missing_observation=observation)
             cluster_new_psi = deepcopy(cluster_old_psi)
             cluster_new_psi[1] += 1
-            cluster_new_psi[2] = new_num_complement + model.cluster_parameters.prior[2]
-            cluster_log_predictive = logbeta(cluster_new_psi) - logbeta(cluster_old_psi)
+            cluster_new_psi[2] = new_num_complement + cluster_parameters.prior[2]
+            if length(logbetas) === 0
+                cluster_log_predictive = logbeta(cluster_new_psi) - logbeta(cluster_old_psi)
+            else 
+                cluster_log_predictive = logbeta(cluster_new_psi) - logbetas[cluster]
+            end
             log_predictive += cluster_log_predictive 
         end
     end
@@ -1043,79 +1069,25 @@ function compute_cluster_log_predictives(observation::Int64, clusters::Vector{In
     # Not strictly the number of observations
     n = maximum(clusters)
     n = maximum([n, observation])
-    psi_parameters = Array{Int64}(undef, 2, n)
-    logbetas = Array{Float64}(undef, n)
-    new_num_complement = compute_num_complement(observation, ntl_sufficient_stats, missing_observation=observation)
-    younger_cluster_new_psi = Array{Float64}(undef, 2)
-    cluster_new_psi = Array{Float64}(undef, 2)
+
+    clusters = get_clusters(sufficient_stats.cluster)
+    num_clusters = length(clusters)
+    log_weights = Array{Float64}(undef, num_clusters) 
+    psi_parameters = zeros(Float64, 2, n)
+    logbetas = zeros(Float64, n)
 
     for cluster = clusters
         if cluster > 1
             cluster_psi = compute_stick_breaking_posterior(cluster, sufficient_stats, ntl_parameters, 
                                                            missing_observation=observation)
             psi_parameters[:, cluster] = cluster_psi
-            log_denom = log(sum(cluster_psi))
-            cluster_log_weights[cluster] = log(cluster_psi[1]) - log_denom
-            complement_log_weights[cluster] = log(cluster_psi[2]) - log_denom
-            #inc!(complement_log_weights_tree, cluster, complement_log_weights[cluster])
-            if observation < cluster
-                logbetas[cluster] = logbeta(cluster_psi)
-            end
+            logbetas[cluster] = logbeta(cluster_psi)
         end
     end
 
     for (i, cluster) = enumerate(clusters)
-        if cluster < observation
-            log_weight = 0
-            if cluster > 1
-                log_weight += cluster_log_weights[cluster]
-            end
-            # Clusters younger than the current cluster
-            younger_clusters = (cluster+1):(observation-1)
-            #log_weight += prefixsum(complement_log_weights_tree, observation-1) - prefixsum(complement_log_weights_tree, cluster)
-            log_weight += sum(complement_log_weights[younger_clusters])
-            log_weights[i] = log_weight
-        else # observation < cluster
-            cluster_num_obs = ntl_sufficient_stats.num_observations[cluster]
-            cluster_old_psi = psi_parameters[:, cluster]
-
-            # Clusters younger than the observation
-            younger_clusters = (observation+1):(cluster-1)
-            younger_clusters = younger_clusters[ntl_sufficient_stats.num_observations[younger_clusters] .> 0]
-
-            if ntl_sufficient_stats.num_observations[1] === 0
-                youngest_cluster = 2
-            else
-                youngest_cluster = 1
-            end
-
-            younger_clusters_log_weight = 0
-            for younger_cluster = younger_clusters
-                younger_cluster_old_psi = psi_parameters[:, younger_cluster]
-                younger_cluster_new_psi[1] = younger_cluster_old_psi[1]
-                younger_cluster_new_psi[2] = younger_cluster_old_psi[2]
-                if observation === 1 && younger_cluster === youngest_cluster
-                    younger_cluster_new_psi[2] = cluster_num_obs + ntl_parameters.prior[2] 
-                    younger_cluster_old_psi = cluster_old_psi
-                else
-                    younger_cluster_new_psi[2] += cluster_num_obs
-                end
-                new_a = younger_cluster_new_psi[1]
-                new_b = younger_cluster_new_psi[2]
-                younger_clusters_log_weight += logbeta(new_a, new_b) - logbetas[younger_cluster]
-            end
-
-            if observation > youngest_cluster
-                cluster_new_psi[1] = cluster_old_psi[1] + 1
-                cluster_new_psi[2] = new_num_complement + 1
-                new = cluster_new_psi
-                cluster_log_weight = logbeta(new[1], new[2]) - logbetas[cluster]
-                log_weight = cluster_log_weight + younger_clusters_log_weight
-            else
-                log_weight = younger_clusters_log_weight
-            end
-            log_weights[i] = log_weight
-        end
+        log_weights[i] = compute_cluster_log_predictive(observation, cluster, sufficient_stats, ntl_parameters, 
+                                                        psi_parameters=psi_parameters, logbetas=logbetas)
     end
     return log_weights
 end
