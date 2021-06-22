@@ -906,12 +906,6 @@ function compute_cluster_log_predictive(observation, cluster, sufficient_stats, 
         cluster_num_obs = sufficient_stats.cluster.num_observations[cluster]
         cluster_old_psi = compute_stick_breaking_posterior(cluster, sufficient_stats, cluster_parameters,
                                                            missing_observation=observation)
-        if sufficient_stats.cluster.num_observations[1] === 0
-            youngest_cluster = 2
-        else
-            youngest_cluster = 1
-        end
-
         younger_clusters_log_predictive = 0
         # clusters younger than the observation
         younger_clusters_range = Vector{Int64}((observation+1):(cluster-1))
@@ -926,31 +920,32 @@ function compute_cluster_log_predictive(observation, cluster, sufficient_stats, 
                 younger_cluster_old_psi = vec(psi_parameters[:, younger_cluster])
             end
             younger_cluster_new_psi = deepcopy(younger_cluster_old_psi)
-            if observation === 1 && younger_cluster === youngest_cluster
-                younger_cluster_new_psi[2] = cluster_num_obs + cluster_parameters.prior[2] 
-                younger_cluster_old_psi = cluster_old_psi
-            else
-                younger_cluster_new_psi[2] += cluster_num_obs
-            end
+            younger_cluster_new_psi[2] += cluster_num_obs
             if length(logbetas) === 0
                 younger_clusters_log_predictive += logbeta(younger_cluster_new_psi) - logbeta(younger_cluster_old_psi)
             else 
                 younger_clusters_log_predictive += logbeta(younger_cluster_new_psi) - logbetas[younger_cluster]
             end
         end
+
         log_predictive = younger_clusters_log_predictive
-        if observation > youngest_cluster
+
+        if observation > 1
             new_num_complement = compute_num_complement(observation, sufficient_stats.cluster, missing_observation=observation)
             cluster_new_psi = deepcopy(cluster_old_psi)
             cluster_new_psi[1] += 1
             cluster_new_psi[2] = new_num_complement + cluster_parameters.prior[2]
-            if length(logbetas) === 0
-                cluster_log_predictive = logbeta(cluster_new_psi) - logbeta(cluster_old_psi)
-            else 
-                cluster_log_predictive = logbeta(cluster_new_psi) - logbetas[cluster]
-            end
-            log_predictive += cluster_log_predictive 
+        else 
+            cluster_new_psi = [1, 1]
         end
+
+        if length(logbetas) === 0
+            cluster_log_predictive = logbeta(cluster_new_psi) - logbeta(cluster_old_psi)
+        else 
+            cluster_log_predictive = logbeta(cluster_new_psi) - logbetas[cluster]
+        end
+
+        log_predictive += cluster_log_predictive 
     end
     return log_predictive
 end
