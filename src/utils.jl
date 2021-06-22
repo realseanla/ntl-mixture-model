@@ -7,6 +7,7 @@ using LinearAlgebra
 using Clustering
 using RCall
 using ProgressMeter
+using Combinatorics
 
 function one_hot_encode(assignments::Vector{Int64})
     n = length(assignments)
@@ -182,5 +183,13 @@ function minVI(markov_chain::Matrix{Int64}; num_burn_in=0)
 end
 
 hasproperty(x, s::Symbol) = s in fieldnames(typeof(x))
+
+function generate_all_clusterings(n::Int64)
+    clusterings = Vector{Vector{Vector{Int64}}}(undef, 0)
+    for i=1:n 
+        clusterings = vcat(clusterings, collect(partitions(1:n, i)))
+    end
+    return clusterings
+end
 
 end
