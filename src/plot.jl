@@ -1,6 +1,7 @@
 module Plot
 
-using ..Utils: compute_co_occurrence_matrix, ari_over_markov_chain
+using ..Utils: compute_co_occurrence_matrix, ari_over_markov_chain, generate_all_clusterings
+using ..Evaluate: compute_posterior_probability, compute_posterior_probability_confidence_interval
 using Plots
 using Statistics
 
@@ -169,6 +170,37 @@ function plot_cluster_sizes_histogram(clustering::Vector{Int64})
     plot(cluster_sizes, seriestype=:histogram, legend=true, label="", bins=10)
     xlabel!("Size of cluster")
     vline!([mean_cluster_size], label="Mean cluster size = $mean_cluster_size")
+end
+
+function plot_clustering_posterior_probability_validation(markov_chain::Matrix{Int64}, data, model)
+    n = size(markov_chain)[1]
+    all_clusterings = generate_all_clusterings(n)
+    num_clusterings = size(all_clusterings)[1]
+    true_posterior_probabilities = Vector{Float64}(undef, num_clusterings)
+    mcmc_means = Vector{Float64}(undef, num_clusterings)
+    mcmc_conf_length = Vector{Float64}(undef, num_clusterings)
+    for (i, clustering) in enumerate(all_clusterings) 
+        true_clustering_posterior_probability = compute_posterior_probability(clustering, data, model)
+        true_posterior_probabilities[i] = true_clustering_posterior_probability 
+        (prob_mean, conf_length) = compute_posterior_probability_confidence_interval(clustering, markov_chain)
+        mcmc_means[i] = prob_mean
+        mcmc_conf_length[i] = conf_length
+    end
+    
+    colours = Vector{String}(undef, num_clusterings)
+    for i = 1:num_clusterings
+        true_posterior_prob = true_posterior_probabilities[i]
+        mcmc_mean = mcmc_means[i]
+        conf_length = mcmc_conf_length[i]
+        if (mcmc_mean - conf_length <= true_posterior_prob) && (true_posterior_prob <= mcmc_mean + conf_length)
+            colours[i] = "blue"
+        else
+        colours[i] = "red"
+        end
+    end
+    
+    scatter(mcmc_means, yerror=mcmc_conf_length, markeralpha=0, legend=nothing)
+    scatter!(true_posterior_probabilities, color=colours, legend=nothing)
 end
 
 end

@@ -232,11 +232,11 @@ function sample!(instances, iteration, data, sufficient_stats, model, auxillary_
 
             previous_cluster_log_weight = data_log_predictive(observation, previous_cluster, sufficient_stats.data, model.data_parameters, 
                                                               data, auxillary_variables)
-            previous_cluster_log_weight += compute_cluster_log_predictive(observation, previous_cluster, sufficient_stats, model.cluster_parameters)
             if previous_cluster === observation 
                 previous_cluster_log_weight += new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
                                                                           auxillary_variables, observation)
             else 
+                previous_cluster_log_weight += compute_cluster_log_predictive(observation, previous_cluster, sufficient_stats, model.cluster_parameters)
                 previous_cluster_log_weight += existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
                                                                                auxillary_variables, observation, 
                                                                                previous_cluster) 
@@ -247,11 +247,11 @@ function sample!(instances, iteration, data, sufficient_stats, model, auxillary_
             # Compute the joint likelihood of the proposal
             proposed_cluster_log_weight = data_log_predictive(observation, proposed_cluster, sufficient_stats.data, model.data_parameters,
                                                               data, auxillary_variables)
-            proposed_cluster_log_weight += compute_cluster_log_predictive(observation, proposed_cluster, sufficient_stats, model.cluster_parameters)
             if proposed_cluster === observation 
                 proposed_cluster_log_weight += new_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
                                                                           auxillary_variables, observation)
             else 
+                proposed_cluster_log_weight += compute_cluster_log_predictive(observation, proposed_cluster, sufficient_stats, model.cluster_parameters)
                 proposed_cluster_log_weight += existing_cluster_log_predictive(sufficient_stats, model.cluster_parameters, 
                                                                                auxillary_variables, observation, 
                                                                                proposed_cluster) 
@@ -553,7 +553,7 @@ function compute_auxillary_data_log_likelihood(sufficient_stats, data_parameters
     for topic = 1:num_topics
         dirichlet_posterior = vec(sufficient_stats.data.topic_token_posterior[:, topic])
         counts = vec(sufficient_stats.data.topic_token_frequencies[:, topic])
-        topic_log_likelihood = log_multinomial_coeff(counts) + logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
+        topic_log_likelihood = logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
         log_likelihood += topic_log_likelihood
     end
     return log_likelihood
@@ -857,9 +857,14 @@ end
 function compute_stick_breaking_posterior(cluster::Int64, cluster_suff_stats::MixtureSufficientStatistics, beta_prior::Vector{T};
                                           missing_observation::Union{Int64, Nothing}=nothing) where {T <: Real}
     posterior = deepcopy(beta_prior)
-    posterior[1] += cluster_suff_stats.num_observations[cluster] - 1
+    num_obs = cluster_suff_stats.num_observations[cluster]
+    @assert num_obs >= 0
+    if num_obs > 0
+        posterior[1] += cluster_suff_stats.num_observations[cluster] - 1
+    end
     posterior[2] += compute_num_complement(cluster, cluster_suff_stats, missing_observation=missing_observation)
-    @assert all(posterior .> 0)
+    @assert posterior[1] > 0
+    @assert posterior[2] > 0
     return posterior
 end
 

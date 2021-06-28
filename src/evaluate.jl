@@ -6,6 +6,9 @@ module Evaluate
     using ..Utils: compute_normalized_weights, generate_all_clusterings
     import ..Fitter: compute_joint_log_likelihood
 
+    export compute_posterior_probability
+    export compute_posterior_probability_confidence_interval
+
     using Statistics
 
     function update_sufficient_statistics!(sufficient_stats, observation, cluster, model, data, aux_var; update_type="add")
@@ -78,16 +81,14 @@ module Evaluate
         batch_length = floor(Int64, sqrt(chain_length))
         num_batches = ceil(Int64, sqrt(chain_length))
 
-        posterior_log_probability = compute_posterior_probability(clustering, markov_chain)
-
         batch_probabilities = Vector{Float64}(undef, num_batches)
         for batch = 1:num_batches
             start_index = batch_length*(batch-1) + 1
             stop_index = batch_length*batch
             batch_probabilities[batch] = compute_posterior_probability(clustering, markov_chain[:, start_index:stop_index])
         end
-        posterior_probability = exp(posterior_log_probability)
-        sigma_squared = (batch_length/(num_batches-1))*sum((batch_probabilities .- posterior_log_probability).^2)
+        posterior_probability = mean(batch_probabilities)
+        sigma_squared = (batch_length/(num_batches-1))*sum((batch_probabilities .- posterior_probability).^2)
         mcmc_se = sqrt(sigma_squared)/sqrt(chain_length)
         return mcmc_se 
     end
@@ -126,7 +127,7 @@ module Evaluate
     function compute_posterior_probability_confidence_interval(clustering, markov_chain::Matrix{Int64})
         posterior_probability = compute_posterior_probability(clustering, markov_chain)
         mcmc_se = compute_mcmc_se(clustering, markov_chain) 
-        return [posterior_probability - 1.96mcmc_se, posterior_probability + 1.96mcmc_se]
+        return posterior_probability, 1.96*mcmc_se 
     end
 
 end
