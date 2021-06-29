@@ -4,6 +4,7 @@ using ..Utils: compute_co_occurrence_matrix, ari_over_markov_chain, generate_all
 using ..Evaluate: compute_posterior_probability, compute_posterior_probability_confidence_interval
 using Plots
 using Statistics
+using Clustering
 
 function plot_assignments(assignments::Vector{Int64})
     plot(1:length(assignments), assignments, seriestype = :scatter, xlabel="Observation", ylabel="Cluster", 
@@ -90,15 +91,22 @@ function plot_log_likelihoods(log_likelihoods::Vector{Float64})
          xlabel="Iteration", ylabel="Log likelihood", legend=false)
 end
 
-function plot_log_likelihoods(log_likelihoods::Matrix{Float64})
+function plot_log_likelihoods(log_likelihoods::Matrix{Float64}; assignment_types=[])
     num_chains = size(log_likelihoods)[2]
-    subplots = []
-    for chain = 1:num_chains
-        subplot = plot(1:size(log_likelihoods)[1], log_likelihoods[:, chain], seriestype=:line,
-             xlabel="Iteration", ylabel="Log likelihood", title="Chain $chain", legend=false)
-        push!(subplots, subplot)
+    num_iterations = size(log_likelihoods)[1]
+    if length(assignment_types) > 0
+        @assert length(assignment_types) == num_chains
     end
-    plot(subplots..., layout=(num_chains, 1), legend=false)
+    assignment_types = ["Initial assignment: $assignment_type" for assignment_type in assignment_types]
+    plot(
+        1:num_iterations, 
+        log_likelihoods, 
+        seriestype=:line, 
+        title="Log likelihood over iterations",
+        xlabel="Iteration", 
+        ylabel="Log likelihood",
+        label=reshape(assignment_types, 1, length(assignment_types))
+    )
 end
 
 function plot_num_clusters(markov_chain::Matrix{Int64}; true_number=0) 
@@ -110,34 +118,51 @@ function plot_num_clusters(markov_chain::Matrix{Int64}; true_number=0)
     end
 end
 
-function plot_num_clusters(markov_chain::Array{Int64}; true_number=0) 
+function plot_num_clusters(markov_chain::Array{Int64}; true_number=0, assignment_types=[]) 
+    num_iterations = size(markov_chain)[2]
     num_chains = size(markov_chain)[3]
-    subplots = []
-    for chain = 1:num_chains
-        num_unique_clusters_vector = mapslices(u->length(unique(u)), markov_chain[:, :, chain], dims=1)
-        subplot = plot(1:length(num_unique_clusters_vector), vec(num_unique_clusters_vector), seriestype=:line,
-             xlabel="Iteration", ylabel="Number of clusters", title="Chain $chain", legend=false)
-        if true_number > 0 
-            hline!([true_number], label="True number of clusters = $true_number")  
-        end
-        push!(subplots, subplot)
+    if length(assignment_types) > 0
+        @assert length(assignment_types) === num_chains
     end
-    plot(subplots..., layout=(num_chains, 1), legend=false)
+    num_clusters = Matrix{Int64}(undef, num_iterations, num_chains)
+    for chain = 1:num_chains
+        num_unique_clusters_vector = vec(mapslices(u->length(unique(u)), markov_chain[:, :, chain], dims=1))
+        num_clusters[:, chain] = num_unique_clusters_vector
+    end
+    assignment_types = ["Initial assignment: $assignment_type" for assignment_type in assignment_types]
+    plot(1:num_iterations, 
+        num_clusters, 
+        seriestype=:line, 
+        title="Number of clusters over iterations",
+        xlabel="Iteration", 
+        ylabel="Number of clusters",
+        label=reshape(assignment_types, 1, length(assignment_types))
+        )
+    if true_number > 0 
+        hline!([true_number], label="True number of clusters = $true_number")  
+    end
 end
 
 function plot_trace(values; ylabel="Trace")
     plot(1:length(values), values, seriestype=:line, xlabel="Iteration", ylabel=ylabel, legend=false)
 end
 
-function plot_trace(values; ylabel="Trace")
+function plot_trace(values; ylabel="Trace", assignment_types=[])
     num_chains = size(values)[2]
-    subplots = []
-    for chain = 1:num_chains
-        subplot = plot(1:size(values)[1], values[:, chain], seriestype=:line, xlabel="Iteration", ylabel=ylabel, legend=false,
-                       title="Chain $chain")
-        push!(subplots, subplot)
+    num_iterations = size(values)[1]
+    if length(assignment_types) > 0
+        @assert length(assignment_types) == num_chains
     end
-    plot(subplots..., layout=(num_chains, 1), legend=false)
+    assignment_types = ["Initial assignment: $assignment_type" for assignment_type in assignment_types]
+    plot(
+        1:num_iterations, 
+        values, 
+        seriestype=:line, 
+        title="$ylabel over iterations",
+        xlabel="Iteration", 
+        ylabel=ylabel,
+        label=reshape(assignment_types, 1, length(assignment_types))
+    )
 end
 
 function plot_ari_posterior_distribution(true_clustering::Vector{Int64}, assignment_posterior::Matrix{Int64}; num_burn_in=0)
@@ -201,6 +226,15 @@ function plot_clustering_posterior_probability_validation(markov_chain::Matrix{I
     
     scatter(mcmc_means, yerror=mcmc_conf_length, markeralpha=0, legend=nothing)
     scatter!(true_posterior_probabilities, color=colours, legend=nothing)
+end
+
+function plot_kmeans_elbow(data; max_num_clusters=10)
+    totalcosts = Vector{Float64}(undef, max_num_clusters)
+    for k = 1:max_num_clusters
+        kmeans_result = kmeans(data, k)
+        totalcosts[k] = kmeans_result.totalcost
+    end
+    plot(1:max_num_clusters, totalcosts)
 end
 
 end
