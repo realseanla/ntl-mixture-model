@@ -148,7 +148,7 @@ function plot_trace(values; ylabel="Trace")
 end
 
 function plot_trace(values; ylabel="Trace", assignment_types=[])
-    num_chains = size(values)[2]
+    num_chains = size(values)[end]
     num_iterations = size(values)[1]
     if length(assignment_types) > 0
         @assert length(assignment_types) == num_chains

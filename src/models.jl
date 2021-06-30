@@ -125,9 +125,10 @@ end
 
 abstract type ParametricArrivalsClusterParameters{T<:ArrivalDistribution} end
 
-struct NtlParameters{T<:ArrivalDistribution} <: ParametricArrivalsClusterParameters{T}
+mutable struct NtlParameters{T<:GeometricArrivals} <: ParametricArrivalsClusterParameters{T}
     prior::Vector{Float64}
     arrival_distribution::T
+    sample_parameter_posterior::Bool
 end
 
 struct BetaNtlParameters{T<:ArrivalDistribution} <: ParametricArrivalsClusterParameters{T}
@@ -140,14 +141,16 @@ end
 
 abstract type ClusterParameters end
 
-struct DpParameters <: ClusterParameters
+mutable struct DpParameters <: ClusterParameters
     beta::Float64
     alpha::Float64
-    function DpParameters(beta, alpha)
-        return new(beta, alpha)
+    prior::Float64
+    sample_parameter_posterior::Bool
+    function DpParameters(beta, alpha; sample_parameter_posterior=false)
+        return new(beta, alpha, alpha, sample_parameter_posterior)
     end
-    function DpParameters(alpha)
-        return new(0, alpha)
+    function DpParameters(alpha; sample_parameter_posterior=false)
+        return new(0, alpha, alpha, sample_parameter_posterior)
     end
 end
 
@@ -244,7 +247,7 @@ end
 
 abstract type Model end
 
-struct Mixture{C<:Union{ClusterParameters, ParametricArrivalsClusterParameters, DpParameters}, D<:DataParameters} <: Model
+mutable struct Mixture{C<:Union{ClusterParameters, ParametricArrivalsClusterParameters, DpParameters}, D<:DataParameters} <: Model
     cluster_parameters::C
     data_parameters::D
 end

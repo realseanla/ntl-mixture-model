@@ -122,7 +122,24 @@ function deterministic_initial_assignment!(instances, data, sufficient_stats, mo
     random_initial_assignment!(auxillary_variables, sufficient_stats, vec(instances[:, iteration]), model, data)
 end
 
+function prepare_cluster_parameter_array(model::Mixture{C, D}, num_total_iterations, num_chains) where {C <: NtlParameters, D}
+    return Array{Float64}(undef, 2, num_total_iterations, num_chains)
+end
+
+function prepare_cluster_parameter_array(model::Mixture{C, D}, num_total_iterations, num_chains) where {C <: DpParameters, D}
+    return Array{Float64}(undef, num_total_iterations, num_chains)
+end
+
+function prepare_cluster_parameter_array(model::Mixture{C, D}, num_total_iterations) where {C <: NtlParameters, D}
+    return Array{Float64}(undef, 2, num_total_iterations)
+end
+
+function prepare_cluster_parameter_array(model::Mixture{C, D}, num_total_iterations) where {C <: DpParameters, D}
+    return Array{Float64}(undef, num_total_iterations)
+end
+
 function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) where {T <: Real}
+    sample_cluster_parameter_posterior = model.cluster_parameters.sample_parameter_posterior
     if hasproperty(model.cluster_parameters, :arrival_distribution)
         sample_arrival_parameter_posterior = model.cluster_parameters.arrival_distribution.sample_parameter_posterior
     else 
@@ -136,14 +153,23 @@ function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) wher
     if sample_arrival_parameter_posterior
         output_arrival_parameter_posterior = Array{Float64}(undef, num_total_iterations, num_chains) 
     end
+    if sample_cluster_parameter_posterior 
+        output_cluster_parameter_posterior = prepare_cluster_parameter_array(model, num_total_iterations, num_chains)
+    end
+
+    original_cluster_parameters = deepcopy(model.cluster_parameters)
 
     for chain = 1:num_chains
+        model.cluster_parameters = deepcopy(original_cluster_parameters)
         assignments = Array{Int64}(undef, n, num_total_iterations)
         log_likelihoods = Vector{Float64}(undef, num_total_iterations)
         sufficient_stats = prepare_sufficient_statistics(model, data)
         auxillary_variables = prepare_auxillary_variables(model, data)
         if sample_arrival_parameter_posterior
             arrival_parameter_posterior = Vector{Float64}(undef, num_total_iterations)
+        end
+        if sample_cluster_parameter_posterior 
+            cluster_parameter_posterior = prepare_cluster_parameter_array(model, num_total_iterations)
         end
         if sampler.assignment_types[chain] === "random"
             random_initial_assignment!(assignments, data, sufficient_stats, model, auxillary_variables, sampler)
@@ -154,6 +180,10 @@ function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) wher
         if sample_arrival_parameter_posterior
             arrival_parameter_posterior[1] = sample_arrival_posterior(sufficient_stats, auxillary_variables, model.cluster_parameters)
         end
+        if sample_cluster_parameter_posterior 
+            sample!(model, sufficient_stats)
+            cluster_parameter_posterior[1] = model.cluster_parameters.prior
+        end
         @showprogress for iteration = 2:num_total_iterations
             assignments[:, iteration] = assignments[:, iteration-1]
             sample!(assignments, iteration, data, sufficient_stats, model, auxillary_variables, sampler) 
@@ -163,11 +193,18 @@ function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) wher
                 arrival_parameter_posterior[iteration] = sample_arrival_posterior(sufficient_stats, auxillary_variables, 
                                                                                   model.cluster_parameters)
             end
+            if sample_cluster_parameter_posterior
+                sample!(model, sufficient_stats)
+                cluster_parameter_posterior[iteration] = model.cluster_parameters.prior
+            end
         end
         output_assignments[:, :, chain] = assignments[:, :]
         output_log_likelihoods[:, chain] = log_likelihoods[:]
         if sample_arrival_parameter_posterior 
             output_arrival_parameter_posterior[:, chain] = arrival_parameter_posterior[:]
+        end
+        if sample_cluster_parameter_posterior 
+            output_cluster_parameter_posterior[:, chain] = cluster_parameter_posterior[:]
         end
     end
     output_iterations = Vector((sampler.num_burn_in+1):num_total_iterations)
@@ -177,7 +214,37 @@ function fit(data::Matrix{T}, model, sampler::MetropolisWithinGibbsSampler) wher
     if sample_arrival_parameter_posterior
         mcmc_output["arrival posterior"] = output_arrival_parameter_posterior[output_iterations, :]
     end
+    if sample_cluster_parameter_posterior 
+        mcmc_output["cluster parameter"] = output_cluster_parameter_posterior
+    end
     return mcmc_output
+end
+
+function sample!(model::Mixture{C, D}, sufficient_stats) where {C <: DpParameters, D}
+    previous_alpha = model.cluster_parameters.alpha
+    
+    # Propose new alpha from truncated normal centered around previous alpha 
+    untruncated_proposal_distribution = Normal(previous_alpha, 1)
+    proposal_distribution = truncated(untruncated_proposal_distribution, 0, Inf)
+    proposed_alpha = rand(proposal_distribution, 1)[1]
+    proposal_log_weight = logpdf(proposal_distribution, proposed_alpha)
+
+    # Compute log weight of previous alpha 
+    untruncated_previous_distribution = Normal(proposed_alpha, 1)
+    previous_distribution = truncated(untruncated_previous_distribution, 0, Inf)
+    previous_log_weight = logpdf(previous_distribution, previous_alpha)
+
+    # Compute the log acceptance ratio  
+    model.cluster_parameters.alpha = proposed_alpha
+    log_acceptance_ratio = (compute_assignment_log_likelihood(sufficient_stats, model.cluster_parameters, nothing) - proposal_log_weight)
+    model.cluster_parameters.alpha = previous_alpha
+    log_acceptance_ratio -= (compute_assignment_log_likelihood(sufficient_stats, model.cluster_parameters, nothing) - previous_log_weight)
+
+    log_uniform_variate = log(rand(Uniform(0, 1), 1)[1])
+    if log_uniform_variate < log_acceptance_ratio
+        model.cluster_parameters.alpha = proposed_alpha
+        model.cluster_parameters.prior = proposed_alpha
+    end
 end
 
 function sample_arrival_posterior(sufficient_stats, auxillary_variables, cluster_parameters::NtlParameters{T}) where {T <: GeometricArrivals}
@@ -502,7 +569,7 @@ function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::S
     num_topics = length(dirichlet_posterior)
     dirichlet_prior = data_parameters.topic_parameter*ones(Float64, num_topics)
     counts = convert(Vector{Int64}, round.(dirichlet_posterior - dirichlet_prior))
-    log_likelihood = log_multinomial_coeff(counts) + logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
+    log_likelihood = logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
     return log_likelihood
 end
 
@@ -511,7 +578,6 @@ function compute_cluster_data_log_likelihood(cluster::Int64, sufficient_stats::S
     dirichlet_posterior = sufficient_stats.data.posterior_dirichlet_scale[:, cluster]
     dirichlet_prior = data_parameters.prior_dirichlet_scale
     counts = convert(Vector{Int64}, round.(dirichlet_posterior - dirichlet_prior))
-    #log_likelihood = log_multinomial_coeff(counts) + logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
     log_likelihood = logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
     return log_likelihood
 end
@@ -552,7 +618,6 @@ function compute_auxillary_data_log_likelihood(sufficient_stats, data_parameters
     num_topics = data_parameters.num_topics
     for topic = 1:num_topics
         dirichlet_posterior = vec(sufficient_stats.data.topic_token_posterior[:, topic])
-        counts = vec(sufficient_stats.data.topic_token_frequencies[:, topic])
         topic_log_likelihood = logmvbeta(dirichlet_posterior) - logmvbeta(dirichlet_prior)
         log_likelihood += topic_log_likelihood
     end
@@ -591,7 +656,8 @@ end
 
 function compute_assignment_log_likelihood(sufficient_stats::SufficientStatistics{C, D},
                                            cluster_parameters::DpParameters,
-                                           auxillary_variables) where {C <: MixtureSufficientStatistics, D}
+                                           auxillary_variables::Union{AuxillaryVariables, Nothing}) where 
+                                           {C <: MixtureSufficientStatistics, D}
     num_observations = sufficient_stats.cluster.num_observations
     num_observations = num_observations[num_observations .> 0]
     num_clusters = length(num_observations)
