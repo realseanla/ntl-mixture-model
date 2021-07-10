@@ -6,24 +6,34 @@ using Plots
 using Statistics
 using Clustering
 
-function plot_assignments(assignments::Vector{Int64})
-    plot(1:length(assignments), assignments, seriestype = :scatter, xlabel="Observation", ylabel="Cluster", 
-         legend=false)
+function plot_assignments(assignments::Vector{Int64}; title="Cluster assignments for observations")
+    plot(
+        1:length(assignments), 
+        assignments, 
+        seriestype = :scatter, 
+        xlabel="Observation", 
+        ylabel="Cluster", 
+        title=title,
+        legend=false
+    )
 end
 
-function plot_assignments(assignments::Vector{Float64})
+function plot_assignments(assignments::Vector{Float64}; title="Cluster assignments for observations")
     assignments = Vector{Int64}(assignments)
-    plot_assignments(assignments)
+    plot_assignments(assignments, title=title)
 end
 
-function plot_co_occurrence_matrix(markov_chain::Matrix{Int64}; num_burn_in=0)
+function plot_co_occurrence_matrix(markov_chain::Matrix{Int64}; num_burn_in=0, title="Co-occurrence matrix")
     co_occurrence_matrix = compute_co_occurrence_matrix(markov_chain[:, (num_burn_in+1):end])
     gr()
     heatmap(1:size(co_occurrence_matrix,1),
-           1:size(co_occurrence_matrix,2), co_occurrence_matrix,
+           1:size(co_occurrence_matrix,2), 
+           co_occurrence_matrix,
            c=cgrad([:white, :blue]),
-           xlabel="Observations", ylabel="Observations",
-           title="Co-occurrence Matrix")
+           xlabel="Observations", 
+           ylabel="Observations",
+           title=title
+        )
 end
 
 function plot_co_occurrence_matrix(markov_chains::Array{Int64}; num_burn_in=0, plot_size=500)
@@ -63,7 +73,8 @@ function plot_co_occurrence_matrix(assignment::Vector{Float64})
     plot_co_occurrence_matrix(assignment)
 end
 
-function plot_arrival_posterior_probabilities(markov_chain::Matrix{Int64}, true_clustering; num_burn_in=0)
+function plot_arrival_posterior_probabilities(markov_chain::Matrix{Int64}, true_clustering; 
+                                              num_burn_in=0, title="Arrival time posterior probabilities")
     num_iterations = size(markov_chain)[2]
     num_observations = size(markov_chain)[1]
     arrival_counts = zeros(Float64, num_observations)
@@ -81,17 +92,34 @@ function plot_arrival_posterior_probabilities(markov_chain::Matrix{Int64}, true_
         append!(true_arrivals, arrival)
     end
 
-    plot(1:num_observations, arrival_posterior_probabilities, seriestype=:scatter,
-         xlabel="Observation", ylabel="Probability", legend=false, )
+    plot(
+        1:num_observations, 
+        arrival_posterior_probabilities, 
+        seriestype=:scatter,
+        xlabel="Observation", 
+        ylabel="Probability", 
+        legend=false, 
+        title=title     
+    )
     vline!(true_arrivals)
 end
 
-function plot_log_likelihoods(log_likelihoods::Vector{Float64})
-    plot(1:size(log_likelihoods)[1], log_likelihoods, seriestype=:line,
-         xlabel="Iteration", ylabel="Log likelihood", legend=false)
+function plot_log_likelihoods(log_likelihoods::Vector{Float64}; title="Log likelihoods over iterations")
+    plot(
+        1:size(log_likelihoods)[1], 
+        log_likelihoods, 
+        seriestype=:line,
+        xlabel="Iteration", 
+        ylabel="Log likelihood", 
+        legend=false,
+        title=title
+    )
 end
 
-function plot_log_likelihoods(log_likelihoods::Matrix{Float64}; assignment_types=[])
+function plot_log_likelihoods(log_likelihoods::Matrix{Float64}; 
+                              assignment_types=[], 
+                              legend_location=:topright, 
+                              title="Log likelihood over iterations")
     num_chains = size(log_likelihoods)[2]
     num_iterations = size(log_likelihoods)[1]
     if length(assignment_types) > 0
@@ -102,23 +130,35 @@ function plot_log_likelihoods(log_likelihoods::Matrix{Float64}; assignment_types
         1:num_iterations, 
         log_likelihoods, 
         seriestype=:line, 
-        title="Log likelihood over iterations",
+        title=title,
         xlabel="Iteration", 
         ylabel="Log likelihood",
+        legend=legend_location,
         label=reshape(assignment_types, 1, length(assignment_types))
     )
 end
 
-function plot_num_clusters(markov_chain::Matrix{Int64}; true_number=0) 
+function plot_num_clusters(markov_chain::Matrix{Int64}; true_number=0, title="Number of clusters") 
     num_unique_clusters_vector = mapslices(u->length(unique(u)), markov_chain, dims=1)
-    plot(1:length(num_unique_clusters_vector), vec(num_unique_clusters_vector), seriestype=:line,
-         xlabel="Iteration", ylabel="Number of clusters", legend=false)
+    plot(
+        1:length(num_unique_clusters_vector), 
+        vec(num_unique_clusters_vector), 
+        seriestype=:line,
+        xlabel="Iteration", 
+        ylabel="Number of clusters", 
+        title=title,
+        legend=false
+    )
     if true_number > 0 
         hline!([true_number], label="True number of clusters = $true_number")  
     end
 end
 
-function plot_num_clusters(markov_chain::Array{Int64}; true_number=0, assignment_types=[]) 
+function plot_num_clusters(markov_chain::Array{Int64}; 
+                           true_number=0, 
+                           assignment_types=[], 
+                           legend_location=:topright,
+                           title="Number of clusters over iterations") 
     num_iterations = size(markov_chain)[2]
     num_chains = size(markov_chain)[3]
     if length(assignment_types) > 0
@@ -133,9 +173,10 @@ function plot_num_clusters(markov_chain::Array{Int64}; true_number=0, assignment
     plot(1:num_iterations, 
         num_clusters, 
         seriestype=:line, 
-        title="Number of clusters over iterations",
+        title=title,
         xlabel="Iteration", 
         ylabel="Number of clusters",
+        legend=legend_location,
         label=reshape(assignment_types, 1, length(assignment_types))
         )
     if true_number > 0 
@@ -143,11 +184,10 @@ function plot_num_clusters(markov_chain::Array{Int64}; true_number=0, assignment
     end
 end
 
-function plot_trace(values; ylabel="Trace")
-    plot(1:length(values), values, seriestype=:line, xlabel="Iteration", ylabel=ylabel, legend=false)
-end
-
-function plot_trace(values; ylabel="Trace", assignment_types=[])
+function plot_trace(values; 
+                    ylabel="Trace", 
+                    assignment_types=[],
+                    title="$ylabel over iterations")
     num_chains = size(values)[end]
     num_iterations = size(values)[1]
     if length(assignment_types) > 0
@@ -165,39 +205,65 @@ function plot_trace(values; ylabel="Trace", assignment_types=[])
     )
 end
 
-function plot_ari_posterior_distribution(true_clustering::Vector{Int64}, assignment_posterior::Matrix{Int64}; num_burn_in=0)
+function plot_ari_posterior_distribution(true_clustering::Vector{Int64}, 
+                                         assignment_posterior::Matrix{Int64}; 
+                                         num_burn_in=0,
+                                         title="ARI posterior distribution")
     ari_posterior = ari_over_markov_chain(true_clustering, assignment_posterior[:, (num_burn_in+1):end])
     mean_ari = round(mean(ari_posterior), digits=3)
-    plot(ari_posterior, seriestype=:histogram, legend=true, label="")
-    vline!([mean_ari], label="Mean ARI = $mean_ari")
+    plot(
+        ari_posterior, 
+        seriestype=:histogram, 
+        legend=true, 
+        label=""
+    )
+    vline!(
+        [mean_ari], 
+        label="Mean ARI = $mean_ari",
+        xlabel="ARI",
+        title=title
+    )
 end
 
-function plot_ari_posterior_distribution(true_clustering::Vector{Int64}, assignment_posterior::Array{Int64}; num_burn_in=0)
+function plot_ari_posterior_distribution(true_clustering::Vector{Int64}, 
+                                         assignment_posterior::Array{Int64}; 
+                                         num_burn_in=0,
+                                         title="ARI posterior distribution")
     num_chains = size(assignment_posterior)[3]
     subplots = []
     for chain = 1:num_chains
         ari_posterior = ari_over_markov_chain(true_clustering, assignment_posterior[:, (num_burn_in+1):end, chain])
         mean_ari = round(mean(ari_posterior), digits=3)
-        subplot = plot(ari_posterior, seriestype=:histogram, legend=true, label="", title="Chain $chain")
+        subplot = plot(ari_posterior, seriestype=:histogram, legend=true, label="", title="Chain $chain", xlabel="ARI")
         vline!([mean_ari], label="Mean ARI = $mean_ari")
         push!(subplots, subplot)
     end
     plot(subplots..., layout=(num_chains, 1), legend=true)
 end
 
-function plot_cluster_sizes_histogram(clustering::Vector{Int64})
+function plot_cluster_sizes_histogram(clustering::Vector{Int64}; title="Histogram of cluster sizes")
     num_clusters = length(unique(clustering))
     cluster_sizes = Vector{Int64}(undef, num_clusters)
     for cluster = 1:num_clusters 
         cluster_sizes[cluster] = count(clustering .=== cluster)
     end
-    mean_cluster_size = mean(cluster_sizes)
-    plot(cluster_sizes, seriestype=:histogram, legend=true, label="", bins=10)
+    mean_cluster_size = round(mean(cluster_sizes), digits=2)
+    plot(
+        cluster_sizes, 
+        seriestype=:histogram, 
+        legend=true, 
+        label="", 
+        bins=10,
+        title=title
+    )
     xlabel!("Size of cluster")
     vline!([mean_cluster_size], label="Mean cluster size = $mean_cluster_size")
 end
 
-function plot_clustering_posterior_probability_validation(markov_chain::Matrix{Int64}, data, model)
+function plot_clustering_posterior_probability_validation(markov_chain::Matrix{Int64}, 
+                                                          data, 
+                                                          model; 
+                                                          title="95% Confidence Intervals for True Posterior Probabilities")
     n = size(markov_chain)[1]
     all_clusterings = generate_all_clusterings(n)
     num_clusterings = size(all_clusterings)[1]
@@ -224,17 +290,30 @@ function plot_clustering_posterior_probability_validation(markov_chain::Matrix{I
         end
     end
     
-    scatter(mcmc_means, yerror=mcmc_conf_length, markeralpha=0, legend=nothing)
+    scatter(mcmc_means, 
+            yerror=mcmc_conf_length, 
+            markeralpha=0, 
+            legend=nothing, 
+            title=title,
+            xlabel="Clustering",
+            ylabel="Posterior Probability")
     scatter!(true_posterior_probabilities, color=colours, legend=nothing)
 end
 
-function plot_kmeans_elbow(data; max_num_clusters=10)
+function plot_kmeans_elbow(data; max_num_clusters=10, title="Elbow plot")
     totalcosts = Vector{Float64}(undef, max_num_clusters)
     for k = 1:max_num_clusters
         kmeans_result = kmeans(data, k)
         totalcosts[k] = kmeans_result.totalcost
     end
-    plot(1:max_num_clusters, totalcosts)
+    plot(
+        1:max_num_clusters, 
+        totalcosts, 
+        label="", 
+        title=title,
+        xlabel="Number of clusters (k)",
+        ylabel="Sum of squared errors"
+    )
 end
 
 end

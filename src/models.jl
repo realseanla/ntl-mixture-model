@@ -10,7 +10,7 @@ export NtlSufficientStatistics, GaussianSufficientStatistics, MultinomialParamet
 export HmmSufficientStatistics, MixtureSufficientStatistics
 export StationaryHmmSufficientStatistics, NonstationaryHmmSufficientStatistics
 export ChangepointSufficientStatistics, Changepoint
-export BetaNtlParameters, BetaNtlSufficientStatistics, ParametricArrivalsClusterParameters
+export ParametricArrivalsClusterParameters
 export PitmanYorArrivals
 export SufficientStatistics
 export AuxillaryVariables, ArrivalsAuxillaryVariables, DataAuxillaryVariables
@@ -123,20 +123,15 @@ struct PitmanYorArrivals <: ArrivalDistribution
     end
 end
 
-abstract type ParametricArrivalsClusterParameters{T<:ArrivalDistribution} end
+abstract type ParametricArrivalsClusterParameters end
 
-mutable struct NtlParameters{T<:GeometricArrivals} <: ParametricArrivalsClusterParameters{T}
+mutable struct NtlParameters <: ParametricArrivalsClusterParameters
     prior::Vector{Float64}
-    arrival_distribution::T
+    arrival_distribution::GeometricArrivals
     sample_parameter_posterior::Bool
-end
-
-struct BetaNtlParameters{T<:ArrivalDistribution} <: ParametricArrivalsClusterParameters{T}
-    alpha::Float64
-    arrival_distribution::T
-    #function BetaNtlParameters{T}(arrival_distribution::T; alpha=0.) where {T<:ArrivalDistribution}
-    #    return new(alpha, arrival_distribution)
-    #end
+    function NtlParameters(prior::Vector{Float64}, arrival_distribution::GeometricArrivals; sample_parameter_posterior::Bool=false)
+        return new(prior, arrival_distribution, sample_parameter_posterior)
+    end
 end
 
 abstract type ClusterParameters end
@@ -144,13 +139,12 @@ abstract type ClusterParameters end
 mutable struct DpParameters <: ClusterParameters
     beta::Float64
     alpha::Float64
-    prior::Float64
     sample_parameter_posterior::Bool
     function DpParameters(beta, alpha; sample_parameter_posterior=false)
-        return new(beta, alpha, alpha, sample_parameter_posterior)
+        return new(beta, alpha, sample_parameter_posterior)
     end
     function DpParameters(alpha; sample_parameter_posterior=false)
-        return new(0, alpha, alpha, sample_parameter_posterior)
+        return new(0, alpha, sample_parameter_posterior)
     end
 end
 
