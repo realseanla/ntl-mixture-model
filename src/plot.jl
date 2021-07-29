@@ -92,16 +92,41 @@ function plot_arrival_posterior_probabilities(markov_chain::Matrix{Int64}, true_
         append!(true_arrivals, arrival)
     end
 
-    plot(
+    colours = Vector{String}(undef, num_observations)
+
+    for observation = 1:num_observations
+        posterior_probability = arrival_posterior_probabilities[observation]
+        if posterior_probability >= 0.5 
+            if observation in true_arrivals # true positive
+                colours[observation] = "green"
+            else # false positive  
+                colours[observation] = "red"
+            end
+        else 
+            if observation in true_arrivals # false negative 
+                colours[observation] = "red"
+            else # true negative 
+                colours[observation] = "green"
+            end
+        end
+    end
+    vline(
+        true_arrivals,
+        linecolor="black",
+        linestyle=:dash,
+        legend=nothing,
+        ylims=[0., 1.]
+    )
+    plot!(
         1:num_observations, 
         arrival_posterior_probabilities, 
+        color=colours,
         seriestype=:scatter,
         xlabel="Observation", 
         ylabel="Probability", 
         legend=false, 
         title=title     
     )
-    vline!(true_arrivals)
 end
 
 function plot_log_likelihoods(log_likelihoods::Vector{Float64}; title="Log likelihoods over iterations")
@@ -221,6 +246,7 @@ function plot_ari_posterior_distribution(true_clustering::Vector{Int64},
         [mean_ari], 
         label="Mean ARI = $mean_ari",
         xlabel="ARI",
+        ylabel="Frequency",
         title=title
     )
 end
@@ -264,6 +290,7 @@ function plot_clustering_posterior_probability_validation(markov_chain::Matrix{I
                                                           data, 
                                                           model; 
                                                           title="95% Confidence Intervals for True Posterior Probabilities")
+    gr()
     n = size(markov_chain)[1]
     all_clusterings = generate_all_clusterings(n)
     num_clusterings = size(all_clusterings)[1]
@@ -286,18 +313,57 @@ function plot_clustering_posterior_probability_validation(markov_chain::Matrix{I
         if (mcmc_mean - conf_length <= true_posterior_prob) && (true_posterior_prob <= mcmc_mean + conf_length)
             colours[i] = "blue"
         else
-        colours[i] = "red"
+            colours[i] = "red"
         end
     end
     
-    scatter(mcmc_means, 
-            yerror=mcmc_conf_length, 
-            markeralpha=0, 
-            legend=nothing, 
-            title=title,
-            xlabel="Clustering",
-            ylabel="Posterior Probability")
-    scatter!(true_posterior_probabilities, color=colours, legend=nothing)
+    # Create custom error bars
+    # Top caps
+    p = plot(
+          mcmc_means + mcmc_conf_length, 
+          seriestype=:scatter,
+          markershape=:hline,
+          markercolor=:black,
+          markersize=10,
+          legend=nothing, 
+          )
+    # Bottom caps
+    plot!(p,
+          mcmc_means - mcmc_conf_length, 
+          seriestype=:scatter,
+          markershape=:hline,
+          markercolor=:black,
+          markersize=10,
+          legend=nothing, 
+          )
+    # Vertical bars 
+    for i=1:num_clusterings 
+        mcmc_mean = mcmc_means[i]
+        conf_length = mcmc_conf_length[i]
+        bar_end_points = [
+            mcmc_mean - conf_length,
+            mcmc_mean + conf_length
+        ]
+        plot!(
+            p,
+            [i, i],
+            bar_end_points,
+            seriestype=:line,
+            legend=nothing,
+            linecolor=:black
+            )
+    end
+    plot!(
+        p,
+        true_posterior_probabilities, 
+        seriestype=:scatter,
+        color=colours, 
+        legend=nothing,
+        xlabel="Clustering",
+        ylabel="Posterior Probability",
+        title=title,
+        )
+    p
 end
 
 function plot_kmeans_elbow(data; max_num_clusters=10, title="Elbow plot")
