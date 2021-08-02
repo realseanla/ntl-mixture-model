@@ -1,2 +1,2 @@
-# ntl-stick-breaking-julia
-A Julia implementation of NTL Stick Breaking models
+# The Neutral-to-the-Left Mixture Model
+A Julia implementation of the NTL mixture model.
