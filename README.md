@@ -22,6 +22,14 @@ This package also uses the following R packages:
 
 ## Usage
 
+Here is an example of a work-flow with this NTL mixture model Julia package.
+
+### 0. Import the package
+```
+include("/path/to/ntl-mixture-model/ntl.jl")
+```
+where `ntl-mixture-model/ntl.jl` is the path the `ntl.jl` file in the main level of this repository.
+
 ### 1. Specify the data parameters (i.e. the within-cluster distribution of the data X).
 
 This implementation of the NTL mixture model accepts two types of data parameters.
@@ -121,3 +129,54 @@ mcmc_output = Ntl.Fitter.fit(data, mixture_model, sampler)
 - If `Ntl.Models.NtlParameters` cluster parameters are used, and the arrival distribution parameter has the `sample_parameter_posterior=true`, then there will be a field called `"arrival posterior"`, which contain draws from the arrival distribution parameter posterior for each iteration, in the form of an array with dimensions `parameter_dim x num_iterations x num_chains`, where `parameter_dim` is the dimension of the arrival distribution parameter.
 - If `Ntl.Models.DpParameters` cluster parameters are used, and the flag `sample_parameter_posterior=true`, then there will be a field called `alpha` which corresponds to draws from the posterior distribution of the `alpha` parameter for each iteration, in the form of an array with dimensions `num_iterations x num_chains`.
 
+### 7. Assess convergence
+The following three convergence diagnostics are implemented.
+
+Log likelihood trace plot:
+```
+Ntl.Plot.plot_log_likelihood(mcmc_output["log likelihood"], assignment_types=assignment_types)
+```
+where `assignment_types::Vector{String}` is the list of initial cluster assignments which is given to the Metropolis-within-Gibbs sampler object `sampler`.
+
+Number of clusters trace plot:
+```
+Ntl.Plot.plot_num_clusters(mcmc_output["assignments"], true_number=true_number_of_clusters, assignment_types=assignment_types)
+```
+where `true_number::Int64` is the true number of clusters, if it is known.
+
+General trace plot for `"arrival posterior"` and `"alpha"`:
+```
+Ntl.Plot.plot_trace(mcmc_output["arrival posterior"], ylabel=ylabel, assignment_types=assignment_types)
+```
+where `ylabel::String` is the string to put as the y-axis label for the plot.
+
+### 8. Visualize the co-occurrence matrix.
+
+Plot the empirical co-occurrence matrix of the clusterings using the command
+```
+first_chain_assignments = mcmc_output["assignments"][:, :, 1]
+Ntl.Plot.plot_co_occurrence_matrix(first_chain_assignments, num_burn_in=num_burn_in)
+```
+where `num_burn_in::Int64` is the number of iterations to throw away from the beginning of the chain as burn-in.
+
+### 9. Construct point estimates of the underlying clustering.
+
+Three methods for constructing point estimates are currently accepted.
+
+Maximum a posteriori estimation:
+```
+first_chain_log_likelihoods = mcmc_output["log likelihood"][:, 1]
+first_chain_assignments = mcmc_output["assignments"][:, :, 1]
+map_estimate = Ntl.Utils.map_estimate(first_chain_assignments, first_chain_log_likelihoods, num_burn_in=num_burn_in)
+```
+where `num_burn_in::Int64` is the number of iterations to throw away from the beginning as burn-in.
+
+Binder estimate (i.e. a clustering which minimizes the posterior expectation of Binder's loss):
+```
+binder_estimate = Ntl.Utils.minbinder(first_chain_assignments, num_burn_in=num_burn_in)
+```
+
+VI estimate (i.e. a clustering which minimizes the posterior expectation of the Variation of Information loss):
+```
+vi_estimate = Ntl.Utils.minVI(first_chain_assignments, num_burn_in=num_burn_in)
+```
