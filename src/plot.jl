@@ -366,7 +366,7 @@ function plot_clustering_posterior_probability_validation(markov_chain::Matrix{I
     p
 end
 
-function plot_kmeans_elbow(data; max_num_clusters=10, title="Elbow plot")
+function plot_kmeans_elbow(data; max_num_clusters=10, title="Distortion over k for k-means clustering")
     totalcosts = Vector{Float64}(undef, max_num_clusters)
     for k = 1:max_num_clusters
         kmeans_result = kmeans(data, k)
@@ -378,7 +378,7 @@ function plot_kmeans_elbow(data; max_num_clusters=10, title="Elbow plot")
         label="", 
         title=title,
         xlabel="Number of clusters (k)",
-        ylabel="Sum of squared errors"
+        ylabel="Distortion"
     )
 end
 
