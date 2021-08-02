@@ -22,7 +22,7 @@ This package also uses the following R packages:
 
 ## Usage
 
-Here is an example of a work-flow with this NTL mixture model Julia package.
+Here is an example of a work-flow with this NTL mixture model Julia package (see more examples in the `experiments` folder, which contains some Jupyter notebooks).
 
 ### 0. Import the package
 ```
