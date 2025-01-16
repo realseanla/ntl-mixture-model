@@ -1,5 +1,5 @@
 # The Neutral-to-the-Left Mixture Model
-A Julia implementation of the NTL mixture model.
+A Julia implementation of the NTL mixture model, a Bayesian nonparametric statistical model for clustering non-exchangeable (e.g. time series) data.
 
 ## Installation
 Make sure the following Julia packages have been installed using `Pkg`:
